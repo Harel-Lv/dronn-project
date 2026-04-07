@@ -1,0 +1,44 @@
+# Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+
+# Packaging / tools
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project: enrolled embeddings (privacy — do not commit real faces)
+data/identity/*.npz
+data/faces_gallery/*.npz
+!data/faces_gallery/README.md
+
+# Large / downloaded models (keep models/README.md tracked if you add one)
+# Uncomment if you do not want models in git:
+# models/*.task

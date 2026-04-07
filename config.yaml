@@ -1,0 +1,60 @@
+# Copy of defaults — ערוך לפי הצורך
+tracking:
+  center_deadzone: 0.15
+  size_min_ratio: 0.03
+  size_max_ratio: 0.25
+  stable_frames_required: 3
+  calibration_seconds: 8
+  calibration_min_samples: 20
+  calibration_small_factor: 0.75
+  calibration_large_factor: 1.35
+
+# רחפן: ברירת מחדל סימולציה. ל-Tello אמיתי — או:
+#   python main.py --mode gesture --tello [--fpv]
+# או שנה כאן: enabled: true, backend: tello
+drone:
+  enabled: false
+  backend: simulated
+  # null = ברירת מחדל djitellopy (192.168.10.1). רק אם IP אחר — כתוב מחרוזת.
+  tello_host: null
+  show_tello_fpv: false
+  follow_pose_every_n_frames: 2
+  follow_pose_max_width: 480
+  tello_connect_retries: 3
+  tello_connect_retry_delay_sec: 1.5
+  fpv_stale_seconds: 5.0
+
+identity:
+  profile_path: data/identity/profile.npz
+  display_name: Owner
+  # landmarks = MediaPipe mesh (כמעט לא מבדיל בין אנשים). insightface = ArcFace (מומלץ).
+  embedding_backend: insightface
+  match_threshold: 0.88
+  # סף דמיון ל-ArcFace (טיפוסי ~0.35–0.45; ככל שגבוה יותר — קשוח יותר)
+  match_threshold_insightface: 0.40
+  enroll_frame_count: 25
+
+fpv_faces:
+  enabled: false
+  gallery_dir: data/faces_gallery
+  embedding_backend: landmarks
+  match_threshold: 0.93
+  match_threshold_insightface: 0.42
+  insightface_process_every_n_frames: 2
+  min_best_vs_second_gap: 0.045
+  allowed_names: null
+  include_identity_profile: true
+
+# מחוות: יד דומיננטית, כיול כף פתוחה, יציבות נפרדת ל-TAKEOFF/LAND
+gestures:
+  dominant_hand: any
+  hand_calibration_seconds: 2.5
+  hand_calibration_min_open_frames: 8
+  stable_frames_normal: 4
+  stable_frames_critical: 8
+  finger_extension_base_ratio: 1.12
+  thumb_extension_base_ratio: 1.08
+  palm_scale_clamp_low: 0.72
+  palm_scale_clamp_high: 1.48
+  max_consecutive_bad_frames: 30
+  land_on_camera_lost: false

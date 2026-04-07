@@ -1,0 +1,15 @@
+# חלונות מצלמה — לא להתקין opencv-python-headless (שובר cv2.imshow).
+# אם insightface משך headless: pip uninstall opencv-python-headless -y && pip install -U opencv-python
+opencv-python>=4.8,<5
+mediapipe
+numpy
+Pillow
+pynput
+pyyaml
+# Tello (real drone):
+djitellopy
+# FPV video decode (often required with djitellopy stream):
+av
+# Optional — ArcFace gallery on FPV / webcam_faces:
+# insightface
+# onnxruntime  # or onnxruntime-gpu
