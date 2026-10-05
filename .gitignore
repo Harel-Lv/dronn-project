@@ -37,8 +37,12 @@ Desktop.ini
 # Project: enrolled embeddings (privacy — do not commit real faces)
 data/identity/*.npz
 data/faces_gallery/*.npz
+*.corrupt_backup
 !data/faces_gallery/README.md
 
 # Large / downloaded models (keep models/README.md tracked if you add one)
 # Uncomment if you do not want models in git:
 # models/*.task
+
+# Runtime noise
+*.log

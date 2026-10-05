@@ -34,7 +34,10 @@ from app.identity.face_profile import (
     average_embeddings,
     face_landmarks_to_embedding,
 )
-from app.ui.hud_session import draw_calibration_overlay, draw_gesture_mode_hud
+from app.identity.identity_perf import CachedInsightFaceVerifier, identity_perf_settings
+from app.session_modes import MODE_SWITCH_HINT, MODE_SWITCH_KEYS
+from app.ui.hud_session import draw_gesture_mode_hud
+from app.ui.operator_hud import draw_calibration_overlay
 
 
 _FPV_GESTURE_WINDOW = "Tello FPV — מצלמת הרחפן"
@@ -65,6 +68,22 @@ _INTENT_RC: dict[str, tuple[int, int, int, int]] = {
 }
 
 
+def _gesture_emergency_land(
+    drone: DroneController,
+    stabilizer: GestureIntentStabilizer,
+) -> str:
+    """L key or explicit safety land — zero RC and land if airborne."""
+    print("[gestures] נחיתת חירום (L)")
+    try:
+        drone.send_rc(0, 0, 0, 0)
+        if drone.is_airborne:
+            drone.land()
+    except Exception as exc:
+        print(f"[gestures] נחיתת חירום: {exc}")
+    stabilizer.reset_to(HOVER)
+    return HOVER
+
+
 def _median(xs: list[float]) -> float | None:
     if not xs:
         return None
@@ -75,8 +94,6 @@ def _session_mode_from_label(mode_label: str) -> str:
     ml = mode_label.lower()
     if "identity" in ml:
         return "identity"
-    if "fast" in ml or "pose" in ml:
-        return "fast + pose"
     return "gesture"
 
 
@@ -88,6 +105,7 @@ def _run_open_palm_calibration(
     gcfg: dict,
     dominant_hand: str,
     close_window_on_exit: bool = True,
+    mode_for_keys: str = "gesture",
 ) -> tuple[float | None, dict]:
     seconds = float(gcfg.get("hand_calibration_seconds", 2.5))
     min_open = max(1, int(gcfg.get("hand_calibration_min_open_frames", 8)))
@@ -120,10 +138,9 @@ def _run_open_palm_calibration(
             draw_calibration_overlay(
                 frame,
                 seconds_remaining=left,
-                total_seconds=seconds,
                 samples_ok=len(spans),
                 min_samples=min_open,
-                dominant_hand=dominant_hand,
+                mode_for_keys=mode_for_keys,
             )
             cv2.imshow(window_name, frame)
             if (cv2.waitKey(1) & 0xFF) in (27, ord("q")):
@@ -268,21 +285,30 @@ def run_gesture_control_loop(
     identity_store: FaceProfileStore | None = None,
     match_threshold: float = 0.88,
     insightface_for_identity=None,
-) -> None:
+    session_ctx=None,
+) -> str | None:
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     gcfg = config.get("gestures", {}) or {}
     dominant = str(gcfg.get("dominant_hand", "any"))
     stable_normal = max(1, int(gcfg.get("stable_frames_normal", stable_frames_required)))
     stable_critical = max(1, int(gcfg.get("stable_frames_critical", 8)))
 
-    palm_ref, calib_meta = _run_open_palm_calibration(
-        webcam,
-        hand_detector,
-        window_name=window_name,
-        gcfg=gcfg,
-        dominant_hand=dominant,
-        close_window_on_exit=False,
-    )
+    palm_ref, calib_meta = None, {"status": "skipped", "samples_ok": 0, "min_samples": 0}
+    if session_ctx is not None and session_ctx.gesture_calib is not None:
+        palm_ref, calib_meta = session_ctx.gesture_calib
+        print("[gestures] reusing palm calibration from this session")
+    else:
+        palm_ref, calib_meta = _run_open_palm_calibration(
+            webcam,
+            hand_detector,
+            window_name=window_name,
+            gcfg=gcfg,
+            dominant_hand=dominant,
+            close_window_on_exit=False,
+            mode_for_keys=mode_label,
+        )
+        if session_ctx is not None:
+            session_ctx.gesture_calib = (palm_ref, calib_meta)
     calib_status = str(calib_meta.get("status", "failed"))
 
     use_pose = pose_detector is not None
@@ -301,9 +327,14 @@ def run_gesture_control_loop(
         stable_frames_critical=stable_critical,
         initial_intent=HOVER,
     )
-    drone = DroneController(config)
-    drone.connect()
+    owns_drone = session_ctx is None
+    if session_ctx is not None:
+        drone = session_ctx.ensure_drone(config)
+    else:
+        drone = DroneController(config)
+        drone.connect()
     prev_stable = HOVER
+    requested_mode: str | None = None
 
     dcfg = config.get("drone", {}) or {}
     show_fpv_window = bool(dcfg.get("show_tello_fpv", False)) and drone.is_live_tello
@@ -315,10 +346,34 @@ def run_gesture_control_loop(
             "המחוות מזוהות ממצלמת המחשב; הפקודות נשלחות ל-Tello."
         )
 
+    if drone.is_live_tello:
+        print(
+            "[safety] L = נחיתת חירום | q / Esc = יציאה (נחיתה אוטומטית אם באוויר)"
+        )
+    print(f"[session] switch modes: {MODE_SWITCH_HINT}")
+
     session_mode = _session_mode_from_label(mode_label)
     max_bad = max(1, int(gcfg.get("max_consecutive_bad_frames", 30)))
     land_on_cam_lost = bool(gcfg.get("land_on_camera_lost", False))
     bad_frames = 0
+    stale_sec = float(dcfg.get("fpv_stale_seconds", 5.0))
+    last_good_fpv = time.monotonic()
+    fpv_stale_warned = False
+    fpv_stale = False
+    fpv_frame = None
+    identity_verifier: CachedInsightFaceVerifier | None = None
+    if identity_store is not None and insightface_for_identity is not None:
+        perf_every, perf_max_w = identity_perf_settings(config)
+        identity_verifier = CachedInsightFaceVerifier(
+            insightface_for_identity,
+            identity_store,
+            match_threshold=float(match_threshold),
+            process_every_n_frames=perf_every,
+            max_width=perf_max_w,
+        )
+        print(
+            f"[webcam_faces] ArcFace כל {perf_every} פריימים, רוחב מקס {perf_max_w}px"
+        )
 
     try:
         while True:
@@ -369,7 +424,15 @@ def run_gesture_control_loop(
             score = 0.0
             iname = ""
             if identity_store is not None:
-                if insightface_for_identity is not None:
+                if identity_verifier is not None:
+                    result = identity_verifier.process(frame)
+                    if result.bbox is not None:
+                        x0, y0, x1, y1 = result.bbox
+                        cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 255, 0), 2)
+                    identity_ok = result.ok
+                    score = result.score
+                    iname = result.name
+                elif insightface_for_identity is not None:
                     emb, bbox = insightface_for_identity.embed(frame)
                     if bbox is not None:
                         insightface_for_identity.draw_bbox(frame, bbox)
@@ -393,7 +456,35 @@ def run_gesture_control_loop(
 
             stable = stabilizer.update(raw_intent)
 
-            if stable == TAKEOFF and prev_stable != TAKEOFF:
+            if show_fpv_window:
+                fpv_frame = drone.read_fpv_frame()
+                if fpv_frame is not None:
+                    last_good_fpv = time.monotonic()
+                    fpv_stale_warned = False
+                    fpv_stale = False
+                elif (
+                    stale_sec > 0
+                    and drone.is_live_tello
+                    and (time.monotonic() - last_good_fpv) >= stale_sec
+                ):
+                    fpv_stale = True
+                    if not fpv_stale_warned:
+                        print(
+                            "[gestures] FPV לא מתעדכן — מאפסים תנועה "
+                            f"(>{stale_sec:.0f}s; fpv_stale_seconds ב-config)"
+                        )
+                        fpv_stale_warned = True
+
+            if fpv_stale:
+                if stable == LAND and prev_stable != LAND:
+                    try:
+                        drone.send_rc(0, 0, 0, 0)
+                        drone.land()
+                    except Exception as exc:
+                        print(f"[drone] land error: {exc}")
+                else:
+                    drone.send_rc(0, 0, 0, 0)
+            elif stable == TAKEOFF and prev_stable != TAKEOFF:
                 try:
                     drone.takeoff()
                 except Exception as exc:
@@ -413,7 +504,10 @@ def run_gesture_control_loop(
                     except Exception:
                         pass
             elif stable in _INTENT_RC:
-                drone.send_rc(*_INTENT_RC[stable])
+                if drone.is_airborne:
+                    drone.send_rc(*_INTENT_RC[stable])
+                else:
+                    drone.send_rc(0, 0, 0, 0)
             else:
                 drone.send_rc(0, 0, 0, 0)
 
@@ -422,7 +516,7 @@ def run_gesture_control_loop(
             identity_line = None
             if identity_store is not None:
                 identity_line = (
-                    f"identity gate: ok={identity_ok}  score={score:.2f}  ({iname})"
+                    f"ID OK: {iname}" if identity_ok else f"ID blocked ({score:.2f})"
                 )
 
             draw_gesture_mode_hud(
@@ -438,26 +532,33 @@ def run_gesture_control_loop(
                 stab_normal=stable_normal,
                 stab_critical=stable_critical,
                 is_live_drone=drone.is_live_tello,
+                fpv_stale=fpv_stale,
+                is_airborne=drone.is_airborne,
             )
 
-            if show_fpv_window:
-                fpv = drone.read_fpv_frame()
-                if fpv is not None:
-                    disp = _fpv_display_resize(fpv, fpv_max_w)
-                    cv2.putText(
-                        disp,
-                        "Tello FPV",
-                        (8, 26),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.65,
-                        (0, 255, 0),
-                        2,
-                        cv2.LINE_AA,
-                    )
-                    cv2.imshow(_FPV_GESTURE_WINDOW, disp)
+            if show_fpv_window and fpv_frame is not None:
+                disp = _fpv_display_resize(fpv_frame, fpv_max_w)
+                cv2.putText(
+                    disp,
+                    "Tello FPV",
+                    (8, 26),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 255, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.imshow(_FPV_GESTURE_WINDOW, disp)
 
             cv2.imshow(window_name, frame)
             k = cv2.waitKey(1) & 0xFF
+            requested_mode = MODE_SWITCH_KEYS.get(k)
+            if requested_mode:
+                print(f"[session] mode switch requested: {requested_mode}")
+                break
+            if k in (ord("l"), ord("L")):
+                prev_stable = _gesture_emergency_land(drone, stabilizer)
+                continue
             if k in (27, ord("q")):
                 break
     finally:
@@ -470,4 +571,8 @@ def run_gesture_control_loop(
             drone.send_rc(0, 0, 0, 0)
         except Exception:
             pass
-        drone.disconnect()
+        if owns_drone:
+            drone.disconnect()
+        if session_ctx is not None:
+            session_ctx.finish_mode_window(window_name, requested_mode)
+    return requested_mode

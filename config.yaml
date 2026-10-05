@@ -1,13 +1,24 @@
 # Copy of defaults — ערוך לפי הצורך
 tracking:
-  center_deadzone: 0.15
-  size_min_ratio: 0.03
-  size_max_ratio: 0.25
-  stable_frames_required: 3
-  calibration_seconds: 8
-  calibration_min_samples: 20
-  calibration_small_factor: 0.75
-  calibration_large_factor: 1.35
+  center_deadzone: 0.12
+  size_min_ratio: 0.04
+  size_max_ratio: 0.22
+  calibration_seconds: 6
+  calibration_min_samples: 12
+  calibration_small_factor: 0.78
+  calibration_large_factor: 1.32
+  process_every_n_frames: 2
+  max_width: 480
+  max_rc_speed: 48
+  require_identity_profile: false
+
+# מצב chase: כל פנים = מטרה אדומה, החזק Space = האצה מקסימלית
+chase:
+  process_every_n_frames: 2
+  max_width: 480
+  max_rc_speed: 85
+  hold_seconds: 0.35
+  stop_size_ratio: 0.32
 
 # רחפן: ברירת מחדל סימולציה. ל-Tello אמיתי — או:
 #   python main.py --mode gesture --tello [--fpv]
@@ -23,6 +34,23 @@ drone:
   tello_connect_retries: 3
   tello_connect_retry_delay_sec: 1.5
   fpv_stale_seconds: 5.0
+  land_on_disconnect: true
+  # preflight: block flight below block %, warn between warn % and block %
+  battery_warn_percent: 30
+  battery_block_percent: 15
+  # backend: simulated | tello | rt_cpp (see rt_control below)
+
+# Real-time C++ control service (Phase A: simulator backend in dronn_rt_service)
+rt_control:
+  enabled: false
+  host: 127.0.0.1
+  port: 9999
+  service_bind: 0.0.0.0
+  control_hz: 20
+  loop_hz: 20
+  watchdog_hover_ms: 500
+  watchdog_safe_ms: 2000
+  stale_packet_ms: 2000
 
 identity:
   profile_path: data/identity/profile.npz
@@ -33,6 +61,10 @@ identity:
   # סף דמיון ל-ArcFace (טיפוסי ~0.35–0.45; ככל שגבוה יותר — קשוח יותר)
   match_threshold_insightface: 0.40
   enroll_frame_count: 25
+  # ביצועים: פחות עומס CPU — מריצים ArcFace כל N פריימים על תמונה מוקטנת
+  insightface_det_size: 320
+  insightface_process_every_n_frames: 3
+  insightface_max_width: 480
 
 fpv_faces:
   enabled: false

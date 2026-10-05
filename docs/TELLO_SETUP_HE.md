@@ -38,7 +38,13 @@ python main.py --mode gesture --tello --fpv
 - חלון שני: **Tello FPV** — מה שהרחפן רואה.
 - דורש `pip install av`.
 
-מצבים נתמכים עם רחפן: `gesture`, `fast`, `webcam_faces` (כולם עוברים דרך `run_gesture_session` עם `DroneController`).
+מצבים נתמכים עם רחפן: `gesture`, `webcam_faces`, `tracking` (מעקב גוף), `manual` (מקלדת).  
+כולם משתמשים ב־`DroneController` — הוסף `--tello` (ובמעקב/ידני גם FPV).
+
+```bash
+# מעקב גוף אחרי המראה
+python main.py --mode tracking --tello
+```
 
 ### אופציה ב׳ — `config.yaml`
 

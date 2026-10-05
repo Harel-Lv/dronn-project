@@ -10,14 +10,35 @@ import yaml
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "tracking": {
-        "center_deadzone": 0.15,
-        "size_min_ratio": 0.03,
-        "size_max_ratio": 0.25,
-        "stable_frames_required": 3,
-        "calibration_seconds": 8,
-        "calibration_min_samples": 20,
-        "calibration_small_factor": 0.75,
-        "calibration_large_factor": 1.35,
+        "center_deadzone": 0.12,
+        "size_min_ratio": 0.04,
+        "size_max_ratio": 0.22,
+        "calibration_seconds": 6.0,
+        "calibration_min_samples": 12,
+        "calibration_small_factor": 0.78,
+        "calibration_large_factor": 1.32,
+        "process_every_n_frames": 2,
+        "max_width": 480,
+        "max_rc_speed": 48,
+        "require_identity_profile": False,
+    },
+    "chase": {
+        "process_every_n_frames": 2,
+        "max_width": 480,
+        "max_rc_speed": 85,
+        "hold_seconds": 0.35,
+        "stop_size_ratio": 0.32,
+    },
+    "rt_control": {
+        "enabled": False,
+        "host": "127.0.0.1",
+        "port": 9999,
+        "service_bind": "0.0.0.0",
+        "control_hz": 20.0,
+        "loop_hz": 20.0,
+        "watchdog_hover_ms": 500,
+        "watchdog_safe_ms": 2000,
+        "stale_packet_ms": 2000,
     },
     "drone": {
         "enabled": False,
@@ -32,12 +53,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "tello_connect_retry_delay_sec": 1.5,
         # FPV: אם אין פריים מהרחפן יותר מ-X שניות — מאפסים RC (0 = כבוי)
         "fpv_stale_seconds": 5.0,
+        # נחיתה אוטומטית בסיום סשן אם הרחפן עדיין באוויר
+        "land_on_disconnect": True,
     },
     "identity": {
         "profile_path": "data/identity/profile.npz",
         "display_name": "Owner",
+        "embedding_backend": "insightface",
         "match_threshold": 0.88,
+        "match_threshold_insightface": 0.42,
         "enroll_frame_count": 25,
+        "insightface_det_size": 320,
+        "insightface_process_every_n_frames": 3,
+        "insightface_max_width": 480,
     },
     "fpv_faces": {
         "enabled": False,
@@ -45,9 +73,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "embedding_backend": "landmarks",
         "match_threshold": 0.93,
         "match_threshold_insightface": 0.42,
-        "insightface_det_size": 640,
+        "insightface_det_size": 320,
         "insightface_ctx_id": -1,
         "insightface_process_every_n_frames": 2,
+        "insightface_max_width": 480,
         "min_best_vs_second_gap": 0.045,
         "duplicate_registration_threshold": None,
         "allowed_names": None,
@@ -93,6 +122,9 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
     merged_drone = DEFAULT_CONFIG["drone"].copy()
     merged_drone.update(data.get("drone", {}))
     merged["drone"] = merged_drone
+    merged_rt = DEFAULT_CONFIG["rt_control"].copy()
+    merged_rt.update(data.get("rt_control", {}))
+    merged["rt_control"] = merged_rt
     merged_identity = DEFAULT_CONFIG["identity"].copy()
     merged_identity.update(data.get("identity", {}))
     merged["identity"] = merged_identity
@@ -102,4 +134,7 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
     merged_gestures = DEFAULT_CONFIG["gestures"].copy()
     merged_gestures.update(data.get("gestures", {}))
     merged["gestures"] = merged_gestures
+    merged_chase = DEFAULT_CONFIG["chase"].copy()
+    merged_chase.update(data.get("chase", {}))
+    merged["chase"] = merged_chase
     return merged

@@ -7,8 +7,11 @@ import numpy as np
 
 class InsightFaceBackend:
     def __init__(self, config: dict) -> None:
-        fcfg = config.get("fpv_faces", {})
-        det = int(fcfg.get("insightface_det_size", 640))
+        icfg = config.get("identity", {}) or {}
+        fcfg = config.get("fpv_faces", {}) or {}
+        det = int(
+            icfg.get("insightface_det_size", fcfg.get("insightface_det_size", 320))
+        )
         self._det_size = (det, det)
         self._ctx_id = int(fcfg.get("insightface_ctx_id", -1))
         try:

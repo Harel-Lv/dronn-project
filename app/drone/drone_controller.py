@@ -11,9 +11,11 @@ from app.drone.safety_rc import clamp_rc
 
 class DroneController:
     def __init__(self, config: dict) -> None:
+        self._root_cfg = config
         self._cfg = config.get("drone", {})
         self._enabled = bool(self._cfg.get("enabled", False))
         self._backend = str(self._cfg.get("backend", "simulated")).lower()
+        self._rt_client: Any = None
         self._tello: Any = None
         self._frame_reader: Any = None
         self._last_rc = (0, 0, 0, 0)
@@ -23,14 +25,47 @@ class DroneController:
         self._battery_display: float | None = None
         # Exponential moving average smoothing for HUD stability.
         self._battery_ema_alpha: float = 0.25
+        self._airborne = False
 
     @property
     def is_live_tello(self) -> bool:
         return self._enabled and self._backend == "tello"
 
+    @property
+    def uses_rt_cpp(self) -> bool:
+        rt = self._root_cfg.get("rt_control", {})
+        rt_on = bool(rt.get("enabled", False))
+        return self._enabled and self._backend == "rt_cpp" and rt_on
+
+    @property
+    def is_airborne(self) -> bool:
+        return self._airborne
+
     def connect(self) -> None:
         if not self._enabled:
             print("[drone] simulation — לא מחובר לרחפן אמיתי")
+            self._connected = True
+            return
+        if self._backend == "rt_cpp":
+            if not bool(self._root_cfg.get("rt_control", {}).get("enabled", False)):
+                print(
+                    "[drone] rt_cpp backend but rt_control.enabled=false — "
+                    "using local simulation prints"
+                )
+                self._connected = True
+                return
+            from app.drone.rt_cpp_client import RtCppClient
+
+            self._rt_client = RtCppClient(self._root_cfg)
+            try:
+                self._rt_client.connect()
+            except (OSError, RuntimeError) as exc:
+                self._rt_client = None
+                raise RuntimeError(
+                    "rt_cpp: dronn_rt_service unavailable — "
+                    "start it first (see scripts/start_rt_service.py)"
+                ) from exc
+            print("[drone] rt_cpp — connected to real-time control service")
             self._connected = True
             return
         if self._backend != "tello":
@@ -83,7 +118,41 @@ class DroneController:
             f"Tello: חיבור נכשל אחרי {retries} ניסיונות. אחרון: {last_err}"
         ) from last_err
 
-    def disconnect(self) -> None:
+    def safe_land_if_airborne(self, *, reason: str = "") -> None:
+        """Zero RC and land when the session ends while the drone is still airborne."""
+        if not self._airborne:
+            return
+        suffix = f" ({reason})" if reason else ""
+        if self.is_live_tello or self._rt_client is not None:
+            print(f"[drone] נחיתת בטיחות{suffix}…")
+        try:
+            self.send_rc(0, 0, 0, 0)
+        except Exception:
+            pass
+        try:
+            self.land()
+        except Exception as exc:
+            print(f"[drone] נחיתת בטיחות נכשלה: {exc}")
+        else:
+            self._airborne = False
+
+    def disconnect(self, *, land: bool | None = None) -> None:
+        do_land = (
+            bool(self._cfg.get("land_on_disconnect", True))
+            if land is None
+            else bool(land)
+        )
+        if do_land:
+            self.safe_land_if_airborne(reason="סיום חיבור")
+        if self._rt_client is not None:
+            try:
+                self.send_rc(0, 0, 0, 0)
+            except Exception:
+                pass
+            try:
+                self._rt_client.close()
+            except Exception:
+                pass
         if self._tello is not None:
             try:
                 self.send_rc(0, 0, 0, 0)
@@ -98,26 +167,42 @@ class DroneController:
                 self._tello.end()
             except Exception:
                 pass
+        self._rt_client = None
         self._tello = None
         self._frame_reader = None
         self._connected = False
         self._battery_display = None
 
     def takeoff(self) -> None:
+        if self._rt_client is not None:
+            self._rt_client.takeoff()
+            self._airborne = True
+            return
         if self._tello is None:
             print("[drone:sim] TAKEOFF")
+            self._airborne = True
             return
         self._tello.takeoff()
+        self._airborne = True
 
     def land(self) -> None:
+        if self._rt_client is not None:
+            self._rt_client.land()
+            self._airborne = False
+            return
         if self._tello is None:
             print("[drone:sim] LAND")
+            self._airborne = False
             return
         self._tello.land()
+        self._airborne = False
 
     def send_rc(self, lr: int, fb: int, ud: int, yaw: int) -> None:
         lr, fb, ud, yaw = clamp_rc(lr, fb, ud, yaw)
         self._last_rc = (lr, fb, ud, yaw)
+        if self._rt_client is not None:
+            self._rt_client.send_rc(lr, fb, ud, yaw)
+            return
         if self._tello is None:
             if any(self._last_rc):
                 print(f"[drone:sim] RC {self._last_rc}")

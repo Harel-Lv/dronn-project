@@ -50,3 +50,9 @@ class GestureIntentStabilizer:
         self._candidate = intent
         self._candidate_count = 1
         return self.displayed_intent
+
+    def reset_to(self, intent: str) -> None:
+        """Force displayed intent (e.g. after emergency land)."""
+        self.displayed_intent = intent
+        self._candidate = None
+        self._candidate_count = 0

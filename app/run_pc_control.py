@@ -43,6 +43,7 @@ _INTENT_RC: dict[str, tuple[int, int, int, int]] = {
     ROTATE_CW: (0, 0, 0, _RC_SPEED),
     ROTATE_CCW: (0, 0, 0, -_RC_SPEED),
 }
+from app.session_modes import MODE_SWITCH_HINT, MODE_SWITCH_KEYS, SESSION_MAIN_WINDOW
 
 
 def _blank_frame(text: str) -> np.ndarray:
@@ -98,18 +99,25 @@ def run_pc_control_loop(
     face_detector=None,
     insightface_backend=None,
     face_gallery=None,
-) -> None:
-    win = "Tello FPV — manual (Esc | T/L | Tab=FOLLOW | H=hand-gestures)"
+    session_ctx=None,
+) -> str | None:
+    win = SESSION_MAIN_WINDOW
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
 
-    drone = DroneController(config)
-    drone.connect()
+    owns_drone = session_ctx is None
+    sim_webcam = session_ctx.webcam if session_ctx is not None else None
+    if session_ctx is not None:
+        drone = session_ctx.ensure_drone(config)
+    else:
+        drone = DroneController(config)
+        drone.connect()
     inp = PcInputController()
     try:
         inp.start()
     except Exception:
         try:
-            drone.disconnect()
+            if owns_drone and drone is not None:
+                drone.disconnect()
         except Exception:
             pass
         raise
@@ -151,8 +159,10 @@ def run_pc_control_loop(
         initial_intent=HOVER,
     )
     prev_stable = HOVER
+    requested_mode: str | None = None
 
     try:
+        print(f"[session] switch modes: {MODE_SWITCH_HINT}")
         while True:
             try:
                 if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
@@ -168,6 +178,9 @@ def run_pc_control_loop(
                 frame = raw_fpv
                 last_good_fpv = time.monotonic()
                 fpv_stale_warned = False
+            elif sim_webcam is not None:
+                wf = sim_webcam.read_frame()
+                frame = wf if wf is not None else _blank_frame("No webcam frame")
             else:
                 frame = _blank_frame("No FPV frame — check stream / Wi-Fi")
 
@@ -451,7 +464,11 @@ def run_pc_control_loop(
                 battery_pct=battery_pct,
             )
             cv2.imshow(win, frame)
-            cv2.waitKey(1)
+            key = cv2.waitKey(1) & 0xFF
+            requested_mode = MODE_SWITCH_KEYS.get(key)
+            if requested_mode:
+                print(f"[session] mode switch requested: {requested_mode}")
+                break
             frame_idx += 1
             time.sleep(0.01)
     finally:
@@ -467,8 +484,13 @@ def run_pc_control_loop(
             drone.send_rc(0, 0, 0, 0)
         except Exception:
             pass
-        drone.disconnect()
-        try:
-            cv2.destroyWindow(win)
-        except cv2.error:
-            pass
+        if owns_drone:
+            drone.disconnect()
+        if session_ctx is not None:
+            session_ctx.finish_mode_window(win, requested_mode)
+        else:
+            try:
+                cv2.destroyWindow(win)
+            except cv2.error:
+                pass
+    return requested_mode

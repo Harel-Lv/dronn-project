@@ -16,6 +16,11 @@ class Webcam:
         if not self.cap.isOpened():
             raise RuntimeError(f"Could not open webcam at index {self.camera_index}")
 
+        try:
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+
     def read_frame(self):
         if self.cap is None:
             raise RuntimeError("Webcam is not open")
