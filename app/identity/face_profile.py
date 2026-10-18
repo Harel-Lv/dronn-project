@@ -17,10 +17,24 @@ def _unpack_npz_str(data, key: str, default: str) -> str:
     return str(raw.flat[0])
 
 
+# Outer eye corners in the MediaPipe face mesh; their distance sets the face scale.
+_LEFT_EYE_OUTER = 33
+_RIGHT_EYE_OUTER = 263
+# Old embeddings were raw (x, y, z) per landmark (478 * 3); the shape-normalized
+# embedding is (x, y) only, so profiles saved before the change never match by size.
+LEGACY_LANDMARK_EMBEDDING_SIZE = 478 * 3
+
+
 def face_landmarks_to_embedding(landmarks_list: list) -> np.ndarray | None:
-    if not landmarks_list:
+    """Face *shape* vector: independent of where the face is in the frame and how far it is."""
+    if not landmarks_list or len(landmarks_list) <= _RIGHT_EYE_OUTER:
         return None
-    arr = np.array([(lm.x, lm.y, lm.z) for lm in landmarks_list], dtype=np.float64).ravel()
+    pts = np.array([(lm.x, lm.y) for lm in landmarks_list], dtype=np.float64)
+    pts -= pts.mean(axis=0)
+    scale = float(np.linalg.norm(pts[_RIGHT_EYE_OUTER] - pts[_LEFT_EYE_OUTER]))
+    if scale < 1e-6:
+        return None
+    arr = (pts / scale).ravel()
     n = np.linalg.norm(arr)
     if n < 1e-9:
         return None
@@ -46,30 +60,40 @@ class FaceProfileStore:
     def __init__(self, profile_path: str, display_name: str = "Owner"):
         self.path = Path(profile_path)
         self.display_name = display_name
+        # (mtime_ns, size, parsed profile); verify() runs every few frames.
+        self._cache: tuple[int, int, tuple[np.ndarray, str, str] | None] | None = None
 
     def exists(self) -> bool:
         return self.path.is_file()
 
     def load(self) -> tuple[np.ndarray, str, str] | None:
         """Returns (normalized embedding, display name, backend id: landmarks | insightface)."""
-        if not self.exists():
-            return None
         try:
-            data = np.load(self.path, allow_pickle=True)
-            if "embedding" not in data.files:
-                return None
-            emb = np.asarray(data["embedding"], dtype=np.float64).ravel()
-        except Exception:
+            st = self.path.stat()
+        except OSError:
+            self._cache = None
             return None
+        if self._cache is not None and self._cache[:2] == (st.st_mtime_ns, st.st_size):
+            return self._cache[2]
+        try:
+            with np.load(self.path, allow_pickle=True) as data:
+                if "embedding" not in data.files:
+                    return None
+                emb = np.asarray(data["embedding"], dtype=np.float64).ravel()
+                name = _unpack_npz_str(data, "name", self.display_name)
+                backend = _unpack_npz_str(data, "backend", "landmarks")
+        except Exception:
+            # File may be mid-write by enrollment: keep using the last good profile.
+            return self._cache[2] if self._cache is not None else None
         n = float(np.linalg.norm(emb))
         if n < 1e-9:
             return None
         emb = emb / n
-        name = _unpack_npz_str(data, "name", self.display_name)
-        backend = _unpack_npz_str(data, "backend", "landmarks")
         if backend not in ("landmarks", "insightface"):
             backend = "landmarks"
-        return emb, name, backend
+        parsed = (emb, name, backend)
+        self._cache = (st.st_mtime_ns, st.st_size, parsed)
+        return parsed
 
     def save(
         self,
@@ -79,6 +103,7 @@ class FaceProfileStore:
         backend: str = "landmarks",
     ) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._cache = None
         np.savez_compressed(
             self.path,
             embedding=embedding.astype(np.float64),

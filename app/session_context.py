@@ -36,9 +36,13 @@ class SessionContext:
     def ensure_drone(self, config: dict) -> DroneController:
         if self.drone is None:
             self.drone = DroneController(config)
+        else:
+            self.drone.sync_session_config(config)
         if not self._drone_connected:
             self.drone.connect()
             self._drone_connected = True
+        else:
+            self.drone.ensure_fpv_stream()
             dc = config.get("drone", {})
             backend = str(dc.get("backend", "")).lower()
             rt_on = bool(config.get("rt_control", {}).get("enabled", False))

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.identity.face_profile import LEGACY_LANDMARK_EMBEDDING_SIZE
+
 
 def resolve_identity_detectors(
     config: dict,
@@ -34,8 +36,8 @@ def resolve_identity_detectors(
             insight = InsightFaceBackend(config)
         except Exception as exc:
             print(
-                f"[identity] InsightFace לא מוכן ({exc}) — "
-                "משתמשים ב-MediaPipe landmarks (פחות מדויק לזיהוי אנשים שונים)."
+                f"[identity] InsightFace not ready ({exc}) — "
+                "using MediaPipe landmarks (less accurate at telling people apart)."
             )
             eb = "landmarks"
 
@@ -55,10 +57,15 @@ def warn_profile_backend_mismatch(store, requested_backend: str) -> None:
     loaded = store.load()
     if loaded is None:
         return
-    _emb, _name, prof_backend = loaded
-    if prof_backend != requested_backend:
+    emb, _name, prof_backend = loaded
+    if prof_backend == "landmarks" and emb.size == LEGACY_LANDMARK_EMBEDDING_SIZE:
         print(
-            f"[identity] זהירות: פרופיל קיים נשמר עם "
-            f"'{prof_backend}' אבל המצב הוא '{requested_backend}'. "
-            "מחק או החלף את profile.npz, או לחץ N במצב identity ורשום מחדש."
+            "[identity] WARNING: profile.npz uses the old landmarks format and will never match. "
+            "Press N in identity mode (3) to re-enroll."
+        )
+    elif prof_backend != requested_backend:
+        print(
+            f"[identity] WARNING: existing profile was saved with "
+            f"'{prof_backend}' but the current backend is '{requested_backend}'. "
+            "Delete or replace profile.npz, or press N in identity mode to re-enroll."
         )

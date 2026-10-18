@@ -1,4 +1,4 @@
-# Copy of defaults — ערוך לפי הצורך
+# Copy of defaults — edit as needed
 tracking:
   center_deadzone: 0.12
   size_min_ratio: 0.04
@@ -11,33 +11,61 @@ tracking:
   max_width: 480
   max_rc_speed: 48
   require_identity_profile: false
+  # keep the person vertically centered, climbing/descending only inside this height band
+  vertical_enabled: true
+  vertical_gain: 40
+  vertical_deadzone: 0.15
+  min_height_cm: 60
+  max_height_cm: 220
+  # damping on how fast the target moves in frame (higher = less overshoot)
+  derivative_gain: 10
+  # RC smoothing: 0..1 (1 = none) and max change per frame per axis
+  smoothing_alpha: 0.4
+  max_rc_step: 15
 
-# מצב chase: כל פנים = מטרה אדומה, החזק Space = האצה מקסימלית
+# chase mode: any face = red target, hold Space = full speed
 chase:
   process_every_n_frames: 2
   max_width: 480
   max_rc_speed: 85
   hold_seconds: 0.35
   stop_size_ratio: 0.32
+  derivative_gain: 10
+  smoothing_alpha: 0.4
+  max_rc_step: 20
 
-# רחפן: ברירת מחדל סימולציה. ל-Tello אמיתי — או:
+# Drone: simulation by default. For a real Tello, either:
 #   python main.py --mode gesture --tello [--fpv]
-# או שנה כאן: enabled: true, backend: tello
+# or set here: enabled: true, backend: tello
 drone:
   enabled: false
   backend: simulated
-  # null = ברירת מחדל djitellopy (192.168.10.1). רק אם IP אחר — כתוב מחרוזת.
+  # null = djitellopy default (192.168.10.1). Set a string only for a different IP.
   tello_host: null
   show_tello_fpv: false
   follow_pose_every_n_frames: 2
   follow_pose_max_width: 480
   tello_connect_retries: 3
   tello_connect_retry_delay_sec: 1.5
+  tello_state_wait_sec: 8
+  tello_response_timeout_sec: 8
   fpv_stale_seconds: 5.0
+  # FPV frame unchanged for this long = frozen stream (treated as no frame)
+  fpv_freeze_seconds: 1.0
+  # while airborne: send hover RC if no command for this long (Tello auto-lands after 15 s,
+  # and keeps executing the last RC until a new one arrives)
+  keepalive_idle_sec: 1.5
   land_on_disconnect: true
   # preflight: block flight below block %, warn between warn % and block %
   battery_warn_percent: 30
   battery_block_percent: 15
+  # in flight: warn at this %, auto-land at that %
+  battery_inflight_warn_percent: 20
+  battery_autoland_percent: 10
+  # no telemetry (UDP 8890) for this long while connected = LINK LOST on the HUD
+  link_lost_seconds: 2.0
+  # highest motor-board temperature that counts as "too hot" (Tello refuses takeoff)
+  temp_warn_c: 85
   # backend: simulated | tello | rt_cpp (see rt_control below)
 
 # Real-time C++ control service (Phase A: simulator backend in dronn_rt_service)
@@ -55,13 +83,13 @@ rt_control:
 identity:
   profile_path: data/identity/profile.npz
   display_name: Owner
-  # landmarks = MediaPipe mesh (כמעט לא מבדיל בין אנשים). insightface = ArcFace (מומלץ).
+  # landmarks = MediaPipe mesh (barely tells people apart). insightface = ArcFace (recommended).
   embedding_backend: insightface
   match_threshold: 0.88
-  # סף דמיון ל-ArcFace (טיפוסי ~0.35–0.45; ככל שגבוה יותר — קשוח יותר)
+  # ArcFace similarity threshold (typical ~0.35-0.45; higher = stricter)
   match_threshold_insightface: 0.40
   enroll_frame_count: 25
-  # ביצועים: פחות עומס CPU — מריצים ArcFace כל N פריימים על תמונה מוקטנת
+  # Performance: less CPU — run ArcFace every N frames on a downscaled image
   insightface_det_size: 320
   insightface_process_every_n_frames: 3
   insightface_max_width: 480
@@ -77,7 +105,7 @@ fpv_faces:
   allowed_names: null
   include_identity_profile: true
 
-# מחוות: יד דומיננטית, כיול כף פתוחה, יציבות נפרדת ל-TAKEOFF/LAND
+# Gestures: dominant hand, open-palm calibration, separate stability for TAKEOFF/LAND
 gestures:
   dominant_hand: any
   hand_calibration_seconds: 2.5

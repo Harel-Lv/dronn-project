@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import sys
 from dataclasses import dataclass
 
 from app.cv2_gui import destroy_all_windows_safe, ensure_opencv_gui_windows
@@ -26,6 +27,15 @@ from app.session_modes import MODE_CHOICES, MODE_SWITCH_HINT, SESSION_MAIN_WINDO
 
 WINDOW_NAME = SESSION_MAIN_WINDOW
 STABLE_FRAMES_REQUIRED = 4
+# Mode result meaning "this mode can't run now — return to the previous mode" (keeps flying).
+BACK_TO_PREVIOUS = "__back__"
+
+
+def _fallback_result(ctx: SessionContext) -> str | None:
+    """After a mode fails to load: stay in the air in the previous mode instead of ending."""
+    if ctx.drone is not None and ctx.drone.is_airborne:
+        return BACK_TO_PREVIOUS
+    return None
 
 
 @dataclass
@@ -52,6 +62,9 @@ def apply_options_to_config(config: dict, opts: SessionOptions) -> dict:
         config.setdefault("drone", {})
         config["drone"]["enabled"] = True
         config["drone"]["backend"] = "tello"
+        # Live Tello: start video stream (tracking/chase/manual use FPV as main view).
+        # FPV optional: try stream when True; flight works without drone video.
+        config["drone"]["show_tello_fpv"] = True
     if opts.fpv:
         config.setdefault("drone", {})
         config["drone"]["show_tello_fpv"] = True
@@ -117,6 +130,12 @@ def _run_single_mode(
                 "MODE: webcam_faces — needs models/face_landmarker.task (see models/README.md)"
             )
         try:
+            if not store.exists() and ctx.drone is not None and ctx.drone.is_airborne:
+                print(
+                    "[session] GATE mode needs an enrolled face — not enrolling while airborne. "
+                    "Land (L), enroll in mode 3, then switch to mode 4. Returning to previous mode."
+                )
+                return BACK_TO_PREVIOUS
             if not store.exists():
                 if eb == "insightface":
                     run_face_enrollment_insightface(
@@ -151,8 +170,10 @@ def _run_single_mode(
             )
         except FileNotFoundError as exc:
             print(f"WEBCAM_FACES: missing model file or invalid path — {exc}")
+            next_mode = _fallback_result(ctx)
         except Exception as exc:
             print(f"WEBCAM_FACES ERROR: {exc}")
+            next_mode = _fallback_result(ctx)
         finally:
             if face_lm is not None:
                 face_lm.close()
@@ -161,11 +182,14 @@ def _run_single_mode(
             detector.close()
         return next_mode
 
-        if current_mode == "manual":
-            print("MODE: manual — keyboard + mouse PC control (Tello + FPV required)")
-            from app.run_pc_control import run_pc_control_loop
+    if current_mode == "manual":
+        from app.run_pc_control import run_pc_control_loop
 
-            ctx.ensure_webcam(loop_opts.camera)
+        print("MODE: manual — keyboard control (use --tello for real drone + FPV)")
+        ctx.ensure_webcam(loop_opts.camera)
+        dcfg = cfg.get("drone", {}) or {}
+        if not (dcfg.get("enabled") and str(dcfg.get("backend", "")).lower() == "tello"):
+            print("MANUAL: no Tello — simulation only. Add --tello for FPV flight.")
         pose = None
         face_det = None
         face_if = None
@@ -208,6 +232,7 @@ def _run_single_mode(
             )
         except Exception as exc:
             print(f"MANUAL MODE ERROR: {exc}")
+            next_mode = _fallback_result(ctx)
         finally:
             if pose is not None:
                 pose.close()
@@ -228,8 +253,10 @@ def _run_single_mode(
             next_mode = run_chase_loop(cfg, webcam=webcam, insight=insight_if, session_ctx=ctx)
         except RuntimeError as exc:
             print(f"CHASE: InsightFace not ready — {exc}")
+            next_mode = _fallback_result(ctx)
         except Exception as exc:
             print(f"CHASE ERROR: {exc}")
+            next_mode = _fallback_result(ctx)
         finally:
             if insight_if is not None:
                 insight_if.close()
@@ -246,8 +273,10 @@ def _run_single_mode(
             )
         except FileNotFoundError as exc:
             print(f"TRACKING: missing pose model — {exc}")
+            next_mode = _fallback_result(ctx)
         except Exception as exc:
             print(f"TRACKING ERROR: {exc}")
+            next_mode = _fallback_result(ctx)
         finally:
             if pose is not None:
                 pose.close()
@@ -283,8 +312,10 @@ def _run_single_mode(
             )
         except FileNotFoundError as exc:
             print(f"IDENTITY: missing model file or invalid path — {exc}")
+            next_mode = _fallback_result(ctx)
         except Exception as exc:
             print(f"IDENTITY ERROR: {exc}")
+            next_mode = _fallback_result(ctx)
         finally:
             if face_lm is not None:
                 face_lm.close()
@@ -315,10 +346,18 @@ def _run_single_mode(
 
 def run_session(opts: SessionOptions, config: dict | None = None) -> None:
     """Run one application session (gesture, identity, manual, etc.)."""
+    # A cp1252 stdout (redirected output) raises on '→' etc. — must never crash a flight.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ensure_opencv_gui_windows()
     base_config = config or load_config()
     ctx = SessionContext(opts=opts, base_config=base_config)
     current_mode = opts.mode
+    previous_mode: str | None = None
+
     try:
         while True:
             loop_opts = SessionOptions(
@@ -346,9 +385,17 @@ def run_session(opts: SessionOptions, config: dict | None = None) -> None:
             except KeyboardInterrupt:
                 break
 
+            going_back = next_mode == BACK_TO_PREVIOUS
+            if going_back:
+                if previous_mode is None or previous_mode == current_mode:
+                    break
+                next_mode = previous_mode
+            prior = current_mode
             switched, current_mode = _next_mode_from_result(current_mode, next_mode)
             if not switched:
                 break
+            # Never "go back" into a mode that just failed (two failing modes would ping-pong).
+            previous_mode = None if going_back else prior
             ctx.prepare_mode_switch()
             print(f"[session] soft switch → {current_mode} (drone stays connected)")
             ctx.show_mode_switch_overlay(current_mode)

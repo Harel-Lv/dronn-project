@@ -52,7 +52,7 @@ def run_face_gallery_webcam_loop(webcam, config: dict) -> None:
                 face_if.draw_bbox(frame, bbox)
                 if emb is not None:
                     name, score = gallery.best_match(emb)
-                    label = name or "לא מזוהה"
+                    label = name or "unknown"
             elif face_lm is not None:
                 res = face_lm.process_frame(frame)
                 face_lm.draw_landmarks(frame, res)
@@ -60,7 +60,7 @@ def run_face_gallery_webcam_loop(webcam, config: dict) -> None:
                 emb = face_landmarks_to_embedding(list(fl)) if fl is not None else None
                 if emb is not None:
                     name, score = gallery.best_match(emb)
-                    label = name or "לא מזוהה"
+                    label = name or "unknown"
 
             cv2.putText(
                 frame,
@@ -68,7 +68,7 @@ def run_face_gallery_webcam_loop(webcam, config: dict) -> None:
                 (12, 32),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.9,
-                (0, 255, 0) if label != "לא מזוהה" and label != "—" else (0, 0, 255),
+                (0, 255, 0) if label != "unknown" and label != "—" else (0, 0, 255),
                 2,
                 cv2.LINE_AA,
             )

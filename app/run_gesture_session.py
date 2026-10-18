@@ -35,12 +35,12 @@ from app.identity.face_profile import (
     face_landmarks_to_embedding,
 )
 from app.identity.identity_perf import CachedInsightFaceVerifier, identity_perf_settings
-from app.session_modes import MODE_SWITCH_HINT, MODE_SWITCH_KEYS
+from app.session_modes import MODE_SWITCH_HINT, MODE_SWITCH_KEYS, is_quit_key
 from app.ui.hud_session import draw_gesture_mode_hud
-from app.ui.operator_hud import draw_calibration_overlay
+from app.ui.operator_hud import draw_calibration_overlay, draw_flight_status
 
 
-_FPV_GESTURE_WINDOW = "Tello FPV — מצלמת הרחפן"
+_FPV_GESTURE_WINDOW = "Tello FPV - drone camera"
 
 
 def _fpv_display_resize(frame: np.ndarray, max_width: int) -> np.ndarray:
@@ -73,13 +73,13 @@ def _gesture_emergency_land(
     stabilizer: GestureIntentStabilizer,
 ) -> str:
     """L key or explicit safety land — zero RC and land if airborne."""
-    print("[gestures] נחיתת חירום (L)")
+    print("[gestures] EMERGENCY LAND (L)")
     try:
         drone.send_rc(0, 0, 0, 0)
         if drone.is_airborne:
             drone.land()
     except Exception as exc:
-        print(f"[gestures] נחיתת חירום: {exc}")
+        print(f"[gestures] emergency land error: {exc}")
     stabilizer.reset_to(HOVER)
     return HOVER
 
@@ -110,14 +110,14 @@ def _run_open_palm_calibration(
     seconds = float(gcfg.get("hand_calibration_seconds", 2.5))
     min_open = max(1, int(gcfg.get("hand_calibration_min_open_frames", 8)))
     if seconds <= 0:
-        print("[gestures] כיול יד מושבת (hand_calibration_seconds=0)")
+        print("[gestures] hand calibration disabled (hand_calibration_seconds=0)")
         return None, {"status": "skipped", "samples_ok": 0, "min_samples": min_open}
 
     deadline = time.time() + seconds
     spans: list[float] = []
     print(
-        f"[gestures] כיול: הצג כף פתוחה למצלמה ~{seconds:.1f}s "
-        f"(לפחות {min_open} פריימים טובים)"
+        f"[gestures] CALIBRATION: show an open palm to the camera for ~{seconds:.1f}s "
+        f"(at least {min_open} good frames)"
     )
 
     try:
@@ -144,7 +144,7 @@ def _run_open_palm_calibration(
             )
             cv2.imshow(window_name, frame)
             if (cv2.waitKey(1) & 0xFF) in (27, ord("q")):
-                print("[gestures] כיול בוטל — ממשיכים בלי נרמול מרחק")
+                print("[gestures] calibration cancelled — continuing without distance normalization")
                 return None, {
                     "status": "cancelled",
                     "samples_ok": len(spans),
@@ -162,12 +162,12 @@ def _run_open_palm_calibration(
     ref = _median(spans) if len(spans) >= min_open else None
     if ref is not None:
         print(
-            f"[gestures] כיול יד: reference palm span = {ref:.1f}px ({len(spans)} samples)"
+            f"[gestures] hand calibration OK: reference palm span = {ref:.1f}px ({len(spans)} samples)"
         )
         return ref, {"status": "ok", "samples_ok": len(spans), "min_samples": min_open}
     print(
-        f"[gestures] כיול: לא נאספו מספיק פריימים ({len(spans)}/{min_open}) — "
-        "ממשיכים בלי נרמול (נסה תאורה, יד מלאה בפריים, מרחק מהמצלמה)"
+        f"[gestures] calibration: not enough frames ({len(spans)}/{min_open}) — "
+        "continuing without normalization (check lighting, full hand in frame, distance)"
     )
     return None, {"status": "failed", "samples_ok": len(spans), "min_samples": min_open}
 
@@ -217,7 +217,7 @@ def run_face_enrollment(
         cv2.destroyWindow(window_name)
         raise RuntimeError("Failed to build embedding")
     store.save(avg, display_name, backend="landmarks")
-    print(f"[enroll] Saved profile for {display_name!r} (MediaPipe landmarks — פחות מבחין בין אנשים)")
+    print(f"[enroll] Saved profile for {display_name!r} (MediaPipe landmarks — weaker at telling people apart)")
     cv2.destroyWindow(window_name)
 
 
@@ -230,7 +230,7 @@ def run_face_enrollment_insightface(
     display_name: str = "Owner",
     window_name: str = "Enroll",
 ) -> None:
-    """Collect ArcFace embeddings (InsightFace); מומלץ לזיהוי אדם אמיתי."""
+    """Collect ArcFace embeddings (InsightFace); recommended for real person identification."""
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     collected: list[np.ndarray] = []
     print(
@@ -289,6 +289,19 @@ def run_gesture_control_loop(
 ) -> str | None:
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     gcfg = config.get("gestures", {}) or {}
+    dcfg_early = config.get("drone", {}) or {}
+    live_tello = bool(dcfg_early.get("enabled")) and str(
+        dcfg_early.get("backend", "")
+    ).lower() == "tello"
+    owns_drone = session_ctx is None
+    drone: DroneController | None = None
+    if live_tello:
+        if session_ctx is not None:
+            drone = session_ctx.ensure_drone(config)
+        else:
+            drone = DroneController(config)
+            drone.connect()
+
     dominant = str(gcfg.get("dominant_hand", "any"))
     stable_normal = max(1, int(gcfg.get("stable_frames_normal", stable_frames_required)))
     stable_critical = max(1, int(gcfg.get("stable_frames_critical", 8)))
@@ -327,28 +340,45 @@ def run_gesture_control_loop(
         stable_frames_critical=stable_critical,
         initial_intent=HOVER,
     )
-    owns_drone = session_ctx is None
-    if session_ctx is not None:
-        drone = session_ctx.ensure_drone(config)
-    else:
-        drone = DroneController(config)
-        drone.connect()
+    if drone is None:
+        if session_ctx is not None:
+            drone = session_ctx.ensure_drone(config)
+        else:
+            drone = DroneController(config)
+            drone.connect()
     prev_stable = HOVER
     requested_mode: str | None = None
 
     dcfg = config.get("drone", {}) or {}
-    show_fpv_window = bool(dcfg.get("show_tello_fpv", False)) and drone.is_live_tello
+    fpv_requested = bool(dcfg.get("show_tello_fpv", False)) and drone.is_live_tello
+    show_fpv_window = fpv_requested and drone.has_fpv_stream
+    if fpv_requested and not show_fpv_window:
+        print(
+            "[gestures] drone FPV video not active — gestures and RC use the PC webcam only "
+            "(update firmware in the phone app / allow UDP 11111 in firewall)."
+        )
     fpv_max_w = max(240, int(dcfg.get("follow_pose_max_width", 640)))
     if show_fpv_window:
         cv2.namedWindow(_FPV_GESTURE_WINDOW, cv2.WINDOW_NORMAL)
         print(
-            "[gestures] חלון נוסף: מצלמת הרחפן (FPV). "
-            "המחוות מזוהות ממצלמת המחשב; הפקודות נשלחות ל-Tello."
+            "[gestures] extra window: drone camera (FPV). "
+            "Gestures are read from the PC webcam; commands go to the Tello."
         )
 
     if drone.is_live_tello:
         print(
-            "[safety] L = נחיתת חירום | q / Esc = יציאה (נחיתה אוטומטית אם באוויר)"
+            "[gestures] main window = PC webcam (hand detection). "
+            "RC commands go to the Tello."
+        )
+        if show_fpv_window:
+            print("[gestures] 'Tello FPV' window = drone camera.")
+        else:
+            print(
+                "[gestures] no FPV — pip install av or enable the stream; "
+                "check show_tello_fpv in config."
+            )
+        print(
+            "[safety] L = EMERGENCY LAND | Esc = quit (auto-land) | q quits only when landed"
         )
     print(f"[session] switch modes: {MODE_SWITCH_HINT}")
 
@@ -372,7 +402,7 @@ def run_gesture_control_loop(
             max_width=perf_max_w,
         )
         print(
-            f"[webcam_faces] ArcFace כל {perf_every} פריימים, רוחב מקס {perf_max_w}px"
+            f"[webcam_faces] ArcFace every {perf_every} frames, max width {perf_max_w}px"
         )
 
     try:
@@ -392,8 +422,8 @@ def run_gesture_control_loop(
                     pass
                 if bad_frames >= max_bad:
                     print(
-                        f"[gestures] מצלמה: {bad_frames} פריימים ריקים ברצף — "
-                        "עוצרים RC ויוצאים מהלולאה"
+                        f"[gestures] camera: {bad_frames} empty frames in a row — "
+                        "stopping RC and leaving the loop"
                     )
                     if land_on_cam_lost and drone.is_live_tello:
                         try:
@@ -470,8 +500,8 @@ def run_gesture_control_loop(
                     fpv_stale = True
                     if not fpv_stale_warned:
                         print(
-                            "[gestures] FPV לא מתעדכן — מאפסים תנועה "
-                            f"(>{stale_sec:.0f}s; fpv_stale_seconds ב-config)"
+                            "[gestures] FPV STALE — zeroing motion "
+                            f"(>{stale_sec:.0f}s; fpv_stale_seconds in config)"
                         )
                         fpv_stale_warned = True
 
@@ -550,6 +580,7 @@ def run_gesture_control_loop(
                 )
                 cv2.imshow(_FPV_GESTURE_WINDOW, disp)
 
+            draw_flight_status(frame, drone.poll_flight_status())
             cv2.imshow(window_name, frame)
             k = cv2.waitKey(1) & 0xFF
             requested_mode = MODE_SWITCH_KEYS.get(k)
@@ -559,7 +590,7 @@ def run_gesture_control_loop(
             if k in (ord("l"), ord("L")):
                 prev_stable = _gesture_emergency_land(drone, stabilizer)
                 continue
-            if k in (27, ord("q")):
+            if is_quit_key(k, drone):
                 break
     finally:
         if show_fpv_window:

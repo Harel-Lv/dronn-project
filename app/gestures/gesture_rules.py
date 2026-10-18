@@ -26,5 +26,9 @@ def gesture_to_drone_intent(gesture: str) -> str:
         "THUMB_UP": TAKEOFF,
         "POINT": FORWARD,
         "PEACE": BACK,
+        "PINKY": LEFT,
+        "THREE": RIGHT,
+        "ROCK": ROTATE_CCW,
+        "GUN": ROTATE_CW,
     }
     return mapping.get(g, NO_GESTURE)

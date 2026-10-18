@@ -8,14 +8,21 @@ import cv2
 import numpy as np
 
 from app.drone.drone_controller import DroneController
+from app.drone.rc_smoothing import ErrorRate, RcSmoother
 from app.identity.face_profile import FaceProfileStore
 from app.identity.identity_helpers import resolve_identity_detectors
 from app.identity.identity_perf import CachedInsightFaceVerifier, identity_perf_settings
-from app.session_modes import MODE_SWITCH_HINT, MODE_SWITCH_KEYS, SESSION_MAIN_WINDOW
-from app.ui.operator_hud import draw_operator_hud
+from app.session_modes import (
+    MODE_SWITCH_HINT,
+    MODE_SWITCH_KEYS,
+    SESSION_MAIN_WINDOW,
+    is_quit_key,
+)
+from app.ui.operator_hud import draw_flight_status, draw_operator_hud
 
 
-_FOLLOW_WINDOW = "Body follow — Tello FPV"
+# ASCII only: OpenCV's Win32 backend garbles non-ASCII titles.
+_FOLLOW_WINDOW = "Body follow - Tello FPV"
 _SIM_WINDOW = SESSION_MAIN_WINDOW
 
 
@@ -61,8 +68,9 @@ def _metrics_on_frame(
     else:
         return None
 
-    xs = [p[0] * inv_scale for p in lm.values()]
-    ys = [p[1] * inv_scale for p in lm.values()]
+    # Pose extrapolates off-screen joints (e.g. legs below frame); clamp so ratio stays <= 1.
+    xs = [min(max(p[0] * inv_scale, 0.0), fw - 1.0) for p in lm.values()]
+    ys = [min(max(p[1] * inv_scale, 0.0), fh - 1.0) for p in lm.values()]
     x0, x1 = int(min(xs)), int(max(xs))
     y0, y1 = int(min(ys)), int(max(ys))
     bw = max(1, x1 - x0)
@@ -75,6 +83,13 @@ def _metrics_on_frame(
     )
 
 
+def _center_errors(metrics: BodyMetrics, frame_w: int, frame_h: int) -> tuple[float, float]:
+    """Target offset from frame center, -1..1 (+x = right of center, +y = below center)."""
+    err_x = (metrics.cx - frame_w * 0.5) / max(frame_w * 0.5, 1.0)
+    err_y = (metrics.cy - frame_h * 0.5) / max(frame_h * 0.5, 1.0)
+    return err_x, err_y
+
+
 def _compute_follow_rc(
     metrics: BodyMetrics,
     frame_w: int,
@@ -83,17 +98,40 @@ def _compute_follow_rc(
     size_min_ratio: float,
     size_max_ratio: float,
     max_speed: int,
+    frame_h: int = 0,
+    err_rate: tuple[float, float] = (0.0, 0.0),
+    derivative_gain: float = 0.0,
+    vertical_gain: float = 0.0,
+    vertical_deadzone: float = 0.15,
 ) -> tuple[int, int, int, int]:
-    err_x = (metrics.cx - frame_w * 0.5) / max(frame_w * 0.5, 1.0)
-    lr = yaw = fb = 0
+    err_x, err_y = _center_errors(metrics, frame_w, max(frame_h, 1))
+    rate_x, rate_y = err_rate
+    lr = yaw = fb = ud = 0
     if abs(err_x) > center_deadzone:
-        lr = int(np.clip(-err_x * 62.0, -max_speed, max_speed))
-        yaw = int(np.clip(err_x * 48.0, -max_speed, max_speed))
+        # Strafe and yaw toward the target together (Tello: +lr = right, +yaw = clockwise).
+        # The rate term damps the swing when the error is already shrinking fast.
+        lr = int(np.clip(err_x * 30.0 + rate_x * derivative_gain * 0.6, -max_speed, max_speed))
+        yaw = int(np.clip(err_x * 48.0 + rate_x * derivative_gain, -max_speed, max_speed))
     if metrics.size_ratio < size_min_ratio:
         fb = int(max_speed * 0.55)
     elif metrics.size_ratio > size_max_ratio:
         fb = int(-max_speed * 0.45)
-    return lr, fb, 0, yaw
+    if vertical_gain > 0 and frame_h > 0 and abs(err_y) > vertical_deadzone:
+        # Target low in frame (+err_y) -> descend (-ud).
+        v_cap = int(max_speed * 0.6)
+        ud = int(np.clip(-(err_y * vertical_gain + rate_y * derivative_gain), -v_cap, v_cap))
+    return lr, fb, ud, yaw
+
+
+def _limit_height(ud: int, height_cm: int | None, min_cm: int, max_cm: int) -> int:
+    """Keep auto-follow inside a height band (no limit when height is unknown, e.g. sim)."""
+    if height_cm is None:
+        return ud
+    if ud < 0 and height_cm <= min_cm:
+        return 0
+    if ud > 0 and height_cm >= max_cm:
+        return 0
+    return ud
 
 
 def _draw_follow_hud(
@@ -106,6 +144,7 @@ def _draw_follow_hud(
     fb: int,
     yaw: int,
     is_sim: bool,
+    ud: int = 0,
 ) -> None:
     h, w = frame.shape[:2]
     if metrics is not None:
@@ -119,7 +158,7 @@ def _draw_follow_hud(
         frame,
         mode="BODY FOLLOW",
         command=status,
-        detail=None if calibrating else f"RC {lr},{fb},{yaw}",
+        detail=None if calibrating else f"RC lr={lr} fb={fb} ud={ud} yaw={yaw}",
         is_sim=is_sim,
         mode_for_keys="tracking",
         calibrating=calibrating,
@@ -151,6 +190,19 @@ def run_body_follow_loop(
     large_factor = float(tcfg.get("calibration_large_factor", 1.32))
     require_identity = bool(tcfg.get("require_identity_profile", False))
     stale_sec = float(dcfg.get("fpv_stale_seconds", 5.0))
+    vertical_gain = (
+        float(tcfg.get("vertical_gain", 40.0)) if bool(tcfg.get("vertical_enabled", True)) else 0.0
+    )
+    vertical_deadzone = float(tcfg.get("vertical_deadzone", 0.15))
+    min_height_cm = int(tcfg.get("min_height_cm", 60))
+    max_height_cm = int(tcfg.get("max_height_cm", 220))
+    derivative_gain = float(tcfg.get("derivative_gain", 10.0))
+    smoother = RcSmoother(
+        alpha=float(tcfg.get("smoothing_alpha", 0.4)),
+        max_step=int(tcfg.get("max_rc_step", 15)),
+    )
+    rate_x = ErrorRate()
+    rate_y = ErrorRate()
 
     owns_drone = session_ctx is None
     if session_ctx is not None:
@@ -158,7 +210,7 @@ def run_body_follow_loop(
     else:
         drone = DroneController(config)
         drone.connect()
-    use_fpv = bool(dcfg.get("show_tello_fpv", False)) and drone.is_live_tello
+    use_fpv = drone.is_live_tello
     win = _FOLLOW_WINDOW if use_fpv else _SIM_WINDOW
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
 
@@ -185,17 +237,19 @@ def run_body_follow_loop(
             )
         elif require_identity:
             print(
-                "[follow] require_identity_profile=true אבל אין פרופיל/InsightFace — "
-                "ממשיכים בנעילת גוף בלבד"
+                "[follow] require_identity_profile=true but no profile/InsightFace — "
+                "continuing with body lock only"
             )
 
     print(
-        f"[follow] מקור וידאו: {'Tello FPV' if use_fpv else 'מצלמת מחשב (סימולציה)'}\n"
-        f"  עמוד במרכז הפריים ~{calib_sec:.0f}s לנעילה על הגוף | T המראה | L נחיתה | q יציאה"
+        f"[follow] video source: {'Tello FPV' if use_fpv else 'PC webcam (SIMULATION)'}\n"
+        f"  stand in the center of the frame ~{calib_sec:.0f}s to lock your body | "
+        "T takeoff | L land | Esc quit (q only when landed)"
     )
     print(f"[session] switch modes: {MODE_SWITCH_HINT}")
 
     requested_mode: str | None = None
+    quit_in_calib = False
 
     # --- calibration: lock body size ---
     size_min = float(tcfg.get("size_min_ratio", 0.04))
@@ -220,7 +274,8 @@ def run_body_follow_loop(
 
             frame = _read_follow_frame(drone, webcam, use_fpv)
             if frame is None:
-                if (cv2.waitKey(1) & 0xFF) in (27, ord("q")):
+                if is_quit_key(cv2.waitKey(1) & 0xFF, drone):
+                    quit_in_calib = True
                     break
                 continue
 
@@ -243,12 +298,14 @@ def run_body_follow_loop(
                 yaw=0,
                 is_sim=not drone.is_live_tello,
             )
+            draw_flight_status(frame, drone.poll_flight_status())
             cv2.imshow(win, frame)
             key = cv2.waitKey(1) & 0xFF
             if MODE_SWITCH_KEYS.get(key):
                 requested_mode = MODE_SWITCH_KEYS[key]
                 break
-            if key in (27, ord("q")):
+            if is_quit_key(key, drone):
+                quit_in_calib = True
                 break
             if key in (ord("l"), ord("L")):
                 try:
@@ -266,22 +323,47 @@ def run_body_follow_loop(
             )
         else:
             baseline = sum(size_samples) / len(size_samples)
-            size_min = max(0.005, baseline * small_factor)
-            size_max = min(0.85, baseline * large_factor)
-            print(
-                f"[follow] body locked — baseline={baseline:.3f} "
-                f"min={size_min:.3f} max={size_max:.3f}"
-            )
-            if session_ctx is not None:
-                session_ctx.tracking_calib = (baseline, size_min, size_max)
+            cal_min = max(0.005, baseline * small_factor)
+            cal_max = min(0.85, baseline * large_factor)
+            if cal_min >= cal_max:
+                print(
+                    f"[follow] calib: body fills the frame (baseline={baseline:.3f}) — "
+                    "too close to the camera. Using defaults "
+                    f"min={size_min:.3f} max={size_max:.3f}. Step back and re-enter mode 5."
+                )
+            else:
+                size_min, size_max = cal_min, cal_max
+                print(
+                    f"[follow] body locked — baseline={baseline:.3f} "
+                    f"min={size_min:.3f} max={size_max:.3f}"
+                )
+                if session_ctx is not None:
+                    session_ctx.tracking_calib = (baseline, size_min, size_max)
 
         if require_identity and identity_verifier is not None:
             if identity_ok_samples < max(1, calib_min // 3):
                 print("[follow] warning: weak face ID during calib — body lock only")
 
-        if requested_mode:
+        if requested_mode or quit_in_calib:
+            for closable in (insight_backend, face_lm_cleanup):
+                if closable is not None:
+                    try:
+                        closable.close()
+                    except Exception:
+                        pass
+            try:
+                drone.send_rc(0, 0, 0, 0)
+            except Exception:
+                pass
+            if owns_drone:
+                drone.disconnect()
             if session_ctx is not None:
                 session_ctx.finish_mode_window(win, requested_mode)
+            else:
+                try:
+                    cv2.destroyWindow(win)
+                except cv2.error:
+                    pass
             return requested_mode
 
     locked = True
@@ -313,40 +395,60 @@ def run_body_follow_loop(
                 and (time.monotonic() - last_good_video) >= stale_sec
             )
             if video_stale and not fpv_stale_warned:
-                print(f"[follow] FPV לא מתעדכן — מאפסים RC (>{stale_sec:.0f}s)")
+                print(f"[follow] FPV STALE — zeroing RC (>{stale_sec:.0f}s)")
                 fpv_stale_warned = True
 
-            lr = fb = yaw = 0
+            lr = fb = ud = yaw = 0
             status = "FOLLOW"
             metrics: BodyMetrics | None = None
+            flight = drone.poll_flight_status()
 
             if not video_stale and frame is not None and frame.size > 0:
-                if frame_idx % process_every == 0:
-                    metrics = _metrics_on_frame(pose_detector, frame, max_width)
-                    if metrics is not None:
-                        last_metrics = metrics
+                fresh = frame_idx % process_every == 0 or raw is None
+                if fresh:
+                    metrics = None if raw is None else _metrics_on_frame(
+                        pose_detector, frame, max_width
+                    )
+                    # Clear on a miss, or skipped frames keep steering toward a lost target.
+                    last_metrics = metrics
                 else:
                     metrics = last_metrics
 
                 if metrics is not None:
-                    lr, fb, _, yaw = _compute_follow_rc(
+                    fh, fw = frame.shape[:2]
+                    if fresh:
+                        ex, ey = _center_errors(metrics, fw, fh)
+                        rate_x.update(ex)
+                        rate_y.update(ey)
+                    lr, fb, ud, yaw = _compute_follow_rc(
                         metrics,
-                        frame.shape[1],
+                        fw,
                         center_deadzone=center_deadzone,
                         size_min_ratio=size_min,
                         size_max_ratio=size_max,
                         max_speed=max_speed,
+                        frame_h=fh,
+                        err_rate=(rate_x.rate, rate_y.rate),
+                        derivative_gain=derivative_gain,
+                        vertical_gain=vertical_gain,
+                        vertical_deadzone=vertical_deadzone,
                     )
+                    ud = _limit_height(ud, flight.height_cm, min_height_cm, max_height_cm)
                 else:
                     status = "NO BODY — hover"
             else:
                 status = "VIDEO STALE — hover"
 
+            if metrics is None:
+                rate_x.reset()
+                rate_y.reset()
+            if drone.is_airborne and not video_stale and metrics is not None:
+                lr, fb, ud, yaw = smoother.update((lr, fb, ud, yaw))
+            else:
+                lr = fb = ud = yaw = 0
+                smoother.reset()
             try:
-                if drone.is_airborne and not video_stale and metrics is not None:
-                    drone.send_rc(lr, fb, 0, yaw)
-                else:
-                    drone.send_rc(0, 0, 0, 0)
+                drone.send_rc(lr, fb, ud, yaw)
             except Exception as exc:
                 print(f"[follow] RC: {exc}")
 
@@ -360,9 +462,11 @@ def run_body_follow_loop(
                 status=status,
                 lr=lr,
                 fb=fb,
+                ud=ud,
                 yaw=yaw,
                 is_sim=not drone.is_live_tello,
             )
+            draw_flight_status(frame, flight)
             cv2.imshow(win, frame)
 
             key = cv2.waitKey(1) & 0xFF
@@ -370,7 +474,7 @@ def run_body_follow_loop(
             if requested:
                 requested_mode = requested
                 break
-            if key in (27, ord("q")):
+            if is_quit_key(key, drone):
                 break
             if key in (ord("t"), ord("T")):
                 try:

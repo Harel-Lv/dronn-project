@@ -24,7 +24,7 @@ def main() -> None:
     parser.add_argument(
         "--fpv",
         action="store_true",
-        help="Tello live camera in a second window. Works with --tello + gesture/webcam_faces/tracking",
+        help="Force Tello FPV (with --tello, FPV is already on by default for tracking/manual/chase)",
     )
     parser.add_argument(
         "--fpv-faces",

@@ -7,7 +7,8 @@ import numpy as np
 
 from mediapipe.tasks.python.core import base_options
 from mediapipe.tasks.python.vision import hand_landmarker
-from mediapipe.tasks.python.vision.core import vision_task_running_mode
+
+from app.detection.mp_video import VideoTimestamps, running_mode
 
 # MediaPipe API changed across versions; support both import paths.
 try:
@@ -36,6 +37,8 @@ class HandDetector:
         max_num_hands: int = 2,
         min_detection_confidence: float = 0.7,
         min_tracking_confidence: float = 0.7,
+        *,
+        video: bool = True,
     ):
         model_path = _get_model_path()
         if not os.path.exists(model_path):
@@ -46,7 +49,7 @@ class HandDetector:
 
         options = hand_landmarker.HandLandmarkerOptions(
             base_options=base_options.BaseOptions(model_asset_path=model_path),
-            running_mode=vision_task_running_mode.VisionTaskRunningMode.IMAGE,
+            running_mode=running_mode(video),
             num_hands=max_num_hands,
             min_hand_detection_confidence=min_detection_confidence,
             min_hand_presence_confidence=min_detection_confidence,
@@ -54,10 +57,13 @@ class HandDetector:
         )
         self._landmarker = hand_landmarker.HandLandmarker.create_from_options(options)
         self._connections = hand_landmarker.HandLandmarksConnections.HAND_CONNECTIONS
+        self._clock = VideoTimestamps() if video else None
 
     def process_frame(self, frame: np.ndarray):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_img = MpImage(ImageFormat.SRGB, rgb)
+        if self._clock is not None:
+            return self._landmarker.detect_for_video(mp_img, self._clock.next_ms())
         return self._landmarker.detect(mp_img)
 
     def draw_landmarks(self, frame: np.ndarray, results) -> None:
@@ -120,9 +126,9 @@ class HandDetector:
         self, frame: np.ndarray, results
     ) -> list[tuple[dict, str]]:
         """
-        מחזיר רשימת (מילון נקודות, תווית יד).
-        תווית: בדרך כלל 'Left' או 'Right' מתוך MediaPipe handedness.
-        אם אין handedness — מחזיר 'Unknown' (הבחירה הדומיננטית תיפול ליד הראשונה).
+        Returns a list of (landmark dict, hand label).
+        Label: usually 'Left' or 'Right' from MediaPipe handedness.
+        Without handedness returns 'Unknown' (dominant-hand selection falls back to the first hand).
         """
         if not results.hand_landmarks:
             return []

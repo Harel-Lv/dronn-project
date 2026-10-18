@@ -7,7 +7,7 @@ from typing import Callable
 
 from pynput import keyboard
 
-# מקשים לפי מיקום פיזי (Windows VK) — עובד גם כשהמקלדת בעברית
+# Keys by physical position (Windows VK) — works even with a Hebrew keyboard layout
 _VK = {
     "w": 0x57,
     "s": 0x53,
@@ -18,11 +18,28 @@ _VK = {
     "q": 0x51,
     "e": 0x45,
     "l": 0x4C,
-    "t": 0x54,  # takeoff (לא נכנס ל-compute_manual_rc)
+    "t": 0x54,  # takeoff (not part of compute_manual_rc)
     "h": 0x48,  # hand mode toggle
     "i": 0x49,  # face-id toggle
     "n": 0x4E,  # save unknown
 }
+
+
+def foreground_window_title() -> str | None:
+    """Title of the focused window, or None when it can't be determined (non-Windows)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        n = user32.GetWindowTextLengthW(hwnd)
+        buf = ctypes.create_unicode_buffer(n + 1)
+        user32.GetWindowTextW(hwnd, buf, n + 1)
+        return buf.value
+    except Exception:
+        return None
 
 
 class PcInputController:
@@ -30,7 +47,9 @@ class PcInputController:
 
     TAB_HOLD_SEC = 0.55
 
-    def __init__(self) -> None:
+    def __init__(self, *, focus_window: str | None = None) -> None:
+        # pynput hooks the whole desktop; only react while this window title is focused.
+        self._focus_window = focus_window
         self._down: set[keyboard.Key | keyboard.KeyCode] = set()
         self._listener: keyboard.Listener | None = None
         self._tab_down_at: float | None = None
@@ -41,6 +60,8 @@ class PcInputController:
         self.hand_mode_toggle_requested: bool = False
         self.face_id_toggle_requested: bool = False
         self.face_save_requested: bool = False
+        # Hook is global: while True (e.g. typing a name in the terminal) keys must not fly.
+        self.paused: bool = False
         self._on_follow_toggle: Callable[[bool], None] | None = None
 
     def set_follow_toggle_callback(self, fn: Callable[[bool], None] | None) -> None:
@@ -51,7 +72,7 @@ class PcInputController:
             return
 
         def on_press(key: keyboard.Key | keyboard.KeyCode | None) -> None:
-            if key is None:
+            if key is None or self.paused or not self.is_focused():
                 return
             # Prevent auto-repeat from causing multiple toggles.
             if key in self._down:
@@ -94,11 +115,27 @@ class PcInputController:
         except OSError as exc:
             hint = ""
             if sys.platform == "win32":
-                hint = " ב-Windows נסה להריץ את PowerShell/Cursor כמנהל (Run as administrator)."
+                hint = " On Windows, try running PowerShell/Cursor as administrator."
             raise RuntimeError(
-                "pynput לא הצליח להאזין למקלדת (נדרש למצב manual)."
-                f"{hint} פרטים: {exc}"
+                "pynput could not listen to the keyboard (required for manual mode)."
+                f"{hint} Details: {exc}"
             ) from exc
+
+    def is_focused(self) -> bool:
+        if self._focus_window is None:
+            return True
+        title = foreground_window_title()
+        return title is None or title == self._focus_window
+
+    def clear_pending(self) -> None:
+        """Drop held keys and queued one-shot requests."""
+        self._down.clear()
+        self._tab_down_at = None
+        self.takeoff_requested = False
+        self.emergency_land = False
+        self.hand_mode_toggle_requested = False
+        self.face_id_toggle_requested = False
+        self.face_save_requested = False
 
     def stop(self) -> None:
         if self._listener is not None:
@@ -139,6 +176,9 @@ class PcInputController:
     def compute_manual_rc(self, speed: int = 55) -> tuple[int, int, int, int]:
         """W/S forward-back, A/D left-right, R/F up-down, Q/E yaw (Tello RC axes)."""
         lr = fb = ud = yaw = 0
+        if not self.is_focused():
+            # A key held while alt-tabbing away must not keep flying the drone.
+            return lr, fb, ud, yaw
         s = max(10, min(100, int(speed)))
         if self._is("w"):
             fb = s

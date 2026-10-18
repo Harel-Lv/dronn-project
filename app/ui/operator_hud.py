@@ -20,11 +20,11 @@ _MODE_KEY_LINES: dict[str, tuple[str, str]] = {
     ),
     "gesture": (
         "FIST=land  OPEN=hover  THUMB=takeoff  POINT=fwd  PEACE=back",
-        f"L=emergency land  {_SWITCH}",
+        f"PINKY=left  3-FINGER=right  ROCK=yaw-L  GUN=yaw-R  L=land  {_SWITCH}",
     ),
     "webcam_faces": (
-        "gestures (above) + enrolled face required",
-        f"L=emergency land  {_SWITCH}",
+        "gesture-mode hand signs + enrolled face required",
+        f"PINKY=left  3-FINGER=right  ROCK=yaw-L  GUN=yaw-R  L=land  {_SWITCH}",
     ),
     "identity": (
         "green = match  |  orange = unknown",
@@ -180,6 +180,67 @@ def draw_battery_badge(frame: np.ndarray, battery_pct: int | None) -> None:
         2,
         cv2.LINE_8,
     )
+
+
+def _text_right(
+    frame: np.ndarray,
+    text: str,
+    y: int,
+    *,
+    scale: float,
+    color: tuple[int, int, int],
+    thickness: int = 2,
+) -> None:
+    (tw, _), _ = cv2.getTextSize(text, _FONT, scale, thickness)
+    x = max(0, frame.shape[1] - tw - 12)
+    cv2.putText(frame, text, (x, y), _FONT, scale, color, thickness, cv2.LINE_8)
+
+
+def draw_flight_status(frame: np.ndarray, status) -> None:
+    """Live-Tello telemetry (top-right) and a LINK LOST banner. `status` is a FlightStatus."""
+    if status is None or not status.live:
+        return
+    if status.battery is not None:
+        b = max(0, min(100, int(status.battery)))
+        if b >= 30:
+            color = (0, 220, 0)
+        elif b > 15 and not status.battery_low:
+            color = (0, 180, 255)
+        elif b > 15:
+            color = (0, 140, 255)
+        else:
+            color = (0, 0, 255)
+        _text_right(frame, f"BAT {b}%", 22, scale=0.58, color=color)
+    parts: list[str] = []
+    if status.temp_c is not None:
+        parts.append(f"{status.temp_c}C")
+    if status.height_cm is not None:
+        parts.append(f"H {status.height_cm}cm")
+    if parts:
+        _text_right(
+            frame,
+            "  ".join(parts),
+            44,
+            scale=0.5,
+            color=(0, 0, 255) if status.temp_hot else (170, 175, 190),
+            thickness=1,
+        )
+    if status.link_lost:
+        h, w = frame.shape[:2]
+        y0 = max(0, h // 2 - 30)
+        cv2.rectangle(frame, (0, y0), (w, min(h, y0 + 60)), (0, 0, 190), -1)
+        msg = "LINK LOST - drone will hover / auto-land"
+        (tw, th), _ = cv2.getTextSize(msg, _FONT, 0.8, 2)
+        cv2.putText(
+            frame,
+            msg,
+            (max(8, (w - tw) // 2), y0 + 30 + th // 2),
+            _FONT,
+            0.8,
+            (255, 255, 255),
+            2,
+            cv2.LINE_8,
+        )
 
 
 def draw_calibration_overlay(

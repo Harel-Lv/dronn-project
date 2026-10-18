@@ -1,6 +1,8 @@
 """Minimal launcher — cute, simple preflight screen before a session."""
 from __future__ import annotations
 
+import threading
+
 import customtkinter as ctk
 
 from app.config import load_config
@@ -9,12 +11,12 @@ from app.ui.preflight import CheckResult, preflight_ready, run_preflight
 
 # Segmented control label → CLI mode
 _MODE_OPTIONS: list[tuple[str, str]] = [
-    ("ידני 🎮", "manual"),
-    ("מחוות ✋", "gesture"),
-    ("זיהוי 🙂", "identity"),
-    ("שער 🔒", "webcam_faces"),
-    ("מעקב 🎯", "tracking"),
-    ("רדיפה 🔴", "chase"),
+    ("Manual 🎮", "manual"),
+    ("Gesture ✋", "gesture"),
+    ("Identity 🙂", "identity"),
+    ("Gate 🔒", "webcam_faces"),
+    ("Track 🎯", "tracking"),
+    ("Chase 🔴", "chase"),
 ]
 _MODE_LABEL_BY_VALUE = {value: label for label, value in _MODE_OPTIONS}
 
@@ -41,6 +43,10 @@ class LauncherApp(ctk.CTk):
         self._check_labels: list[ctk.CTkLabel] = []
         self._running = False
         self._preflight_after_id: str | None = None
+        self._poll_after_id: str | None = None
+        self._preflight_thread: threading.Thread | None = None
+        self._preflight_pending = False
+        self._preflight_result: tuple[str, bool, list[CheckResult]] | None = None
 
         self._build()
         self._schedule_preflight()
@@ -68,7 +74,7 @@ class LauncherApp(ctk.CTk):
 
         ctk.CTkLabel(
             hero,
-            text="שליטה ברחפן — מחוות, מעקב וזיהוי",
+            text="Drone control — gestures, tracking, identity",
             font=ctk.CTkFont(size=13),
             text_color=_MUTED,
         ).pack(pady=(0, 16))
@@ -81,7 +87,7 @@ class LauncherApp(ctk.CTk):
 
         ctk.CTkLabel(
             inner,
-            text="מה נעשה היום?",
+            text="Select mode",
             font=ctk.CTkFont(size=14, weight="bold"),
             anchor="w",
         ).pack(fill="x", pady=(0, 8))
@@ -102,7 +108,7 @@ class LauncherApp(ctk.CTk):
 
         ctk.CTkSwitch(
             toggles,
-            text="רחפן אמיתי (Tello)",
+            text="Real drone (Tello)",
             variable=self._live_var,
             command=self._on_live_toggle,
             progress_color=_ACCENT,
@@ -110,7 +116,7 @@ class LauncherApp(ctk.CTk):
 
         self._fpv_switch = ctk.CTkSwitch(
             toggles,
-            text="מצלמת רחפן (FPV)",
+            text="Drone camera (FPV)",
             variable=self._fpv_var,
             command=self._schedule_preflight,
             progress_color=_ACCENT,
@@ -120,7 +126,7 @@ class LauncherApp(ctk.CTk):
 
         cam_row = ctk.CTkFrame(inner, fg_color="transparent")
         cam_row.pack(fill="x", pady=(0, 12))
-        ctk.CTkLabel(cam_row, text="מצלמת מחשב", text_color=_MUTED).pack(side="left")
+        ctk.CTkLabel(cam_row, text="PC webcam", text_color=_MUTED).pack(side="left")
         ctk.CTkOptionMenu(
             cam_row,
             values=["0", "1", "2"],
@@ -131,7 +137,7 @@ class LauncherApp(ctk.CTk):
 
         ctk.CTkLabel(
             inner,
-            text="בדיקות מוכנות",
+            text="Preflight checks",
             font=ctk.CTkFont(size=13, weight="bold"),
             anchor="w",
         ).pack(fill="x", pady=(0, 6))
@@ -141,7 +147,7 @@ class LauncherApp(ctk.CTk):
 
         self._fly_btn = ctk.CTkButton(
             inner,
-            text="🚀  הטס!",
+            text="🚀  FLY",
             height=50,
             corner_radius=14,
             font=ctk.CTkFont(size=20, weight="bold"),
@@ -153,7 +159,7 @@ class LauncherApp(ctk.CTk):
 
         ctk.CTkLabel(
             inner,
-            text="L = נחיתת חירום   ·   q / Esc = יציאה",
+            text="L = emergency land   ·   Esc = quit",
             font=ctk.CTkFont(size=11),
             text_color=_MUTED,
         ).pack()
@@ -185,27 +191,65 @@ class LauncherApp(ctk.CTk):
     def _schedule_preflight(self) -> None:
         if self._preflight_after_id is not None:
             self.after_cancel(self._preflight_after_id)
-        self._status.configure(text="בודק מוכנות…")
+        self._status.configure(text="Running checks...")
         self._preflight_after_id = self.after(650, self._refresh_preflight)
 
     def _current_mode(self) -> str:
         return self._mode_var.get()
 
     def _refresh_preflight(self) -> None:
+        """Start checks off the Tk thread: a Tello probe can block for ~8 s."""
         self._preflight_after_id = None
-        for w in self._check_labels:
-            w.destroy()
-        self._check_labels.clear()
-
+        if self._preflight_thread is not None and self._preflight_thread.is_alive():
+            # One probe at a time (webcam + Tello UDP); rerun with fresh settings when done.
+            self._preflight_pending = True
+            return
+        self._preflight_pending = False
         mode = self._current_mode()
         live = self._live_var.get()
         camera = int(self._camera_var.get())
-        results = run_preflight(
-            mode=mode,
-            live_tello=live,
-            camera_index=camera,
-            config=load_config(),
-        )
+        if not self._running:
+            self._fly_btn.configure(
+                state="disabled",
+                text="Checking...",
+                fg_color=("#9ca3af", "#374151"),
+            )
+        self._status.configure(text="Running checks...")
+
+        def work() -> None:
+            try:
+                results = run_preflight(
+                    mode=mode,
+                    live_tello=live,
+                    camera_index=camera,
+                    config=load_config(),
+                )
+            except Exception as exc:
+                results = [CheckResult("Preflight", False, f"check failed: {exc}")]
+            self._preflight_result = (mode, live, results)
+
+        self._preflight_result = None
+        self._preflight_thread = threading.Thread(target=work, name="preflight", daemon=True)
+        self._preflight_thread.start()
+        self._poll_after_id = self.after(100, self._poll_preflight)
+
+    def _poll_preflight(self) -> None:
+        self._poll_after_id = None
+        if self._preflight_thread is not None and self._preflight_thread.is_alive():
+            self._poll_after_id = self.after(100, self._poll_preflight)
+            return
+        result = self._preflight_result
+        self._preflight_thread = None
+        if self._preflight_pending:
+            self._refresh_preflight()
+            return
+        if result is not None:
+            self._render_preflight(*result)
+
+    def _render_preflight(self, mode: str, live: bool, results: list[CheckResult]) -> None:
+        for w in self._check_labels:
+            w.destroy()
+        self._check_labels.clear()
 
         for r in results:
             lbl = ctk.CTkLabel(
@@ -225,28 +269,28 @@ class LauncherApp(ctk.CTk):
         if ready:
             self._fly_btn.configure(
                 state="normal",
-                text="🚀  הטס!",
+                text="🚀  FLY",
                 fg_color=_ACCENT,
             )
-            hint = "מוכן לטוס! ✨" if not live else "מוכן — ודא Wi‑Fi ל-Tello ✨"
+            hint = "Ready (SIMULATION) ✨" if not live else "Ready — make sure Wi-Fi is on Tello ✨"
             for r in results:
-                if r.label == "סוללה Tello" and r.ok and "אזהרה" in r.detail:
-                    hint = "מוכן — אזהרה: סוללה נמוכה ⚠️"
+                if r.label == "Tello battery" and r.ok and "WARNING" in r.detail:
+                    hint = "Ready — WARNING: low battery ⚠️"
                     break
             self._status.configure(text=hint)
         else:
             self._fly_btn.configure(
                 state="disabled",
-                text="עוד לא מוכן",
+                text="Not ready",
                 fg_color=("#9ca3af", "#374151"),
             )
-            self._status.configure(text="תקן את הסעיפים האדומים למעלה")
+            self._status.configure(text="Fix the red items above")
 
     @staticmethod
     def _check_color(r: CheckResult) -> tuple[str, str]:
         if not r.ok:
             return ("#b91c1c", "#f87171")
-        if "אזהרה" in r.detail:
+        if "WARNING" in r.detail:
             return ("#b45309", "#fbbf24")
         return ("#15803d", "#4ade80")
 
@@ -259,14 +303,17 @@ class LauncherApp(ctk.CTk):
     def _on_fly(self) -> None:
         if self._running:
             return
+        if self._preflight_thread is not None and self._preflight_thread.is_alive():
+            # The probe still holds the Tello/webcam; the session would race it.
+            return
         self._running = True
-        self._fly_btn.configure(state="disabled", text="ממריא… 🛫")
+        self._fly_btn.configure(state="disabled", text="Launching... 🛫")
         self.update_idletasks()
 
         opts = SessionOptions(
             mode=self._current_mode(),
             tello=self._live_var.get(),
-            fpv=self._fpv_var.get() and self._live_var.get(),
+            fpv=self._live_var.get() or self._fpv_var.get(),
             camera=int(self._camera_var.get()),
         )
 
@@ -284,6 +331,8 @@ class LauncherApp(ctk.CTk):
     def _on_close(self) -> None:
         if self._preflight_after_id is not None:
             self.after_cancel(self._preflight_after_id)
+        if self._poll_after_id is not None:
+            self.after_cancel(self._poll_after_id)
         self.destroy()
 
 

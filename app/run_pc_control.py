@@ -31,6 +31,7 @@ from app.input.pc_controller import PcInputController
 from app.identity.face_gallery import save_embedding_to_gallery_file
 from app.identity.face_profile import face_landmarks_to_embedding
 from app.ui.hud_session import draw_manual_mode_hud
+from app.ui.operator_hud import draw_flight_status
 
 _RC_SPEED = 48
 _INTENT_RC: dict[str, tuple[int, int, int, int]] = {
@@ -61,6 +62,11 @@ def _blank_frame(text: str) -> np.ndarray:
     return img
 
 
+def _release_cam(cam: Webcam | None, shared: Webcam | None) -> None:
+    if cam is not None and cam is not shared:
+        cam.release()
+
+
 def _follow_lr_yaw(
     pose_detector,
     frame_bgr: np.ndarray,
@@ -87,7 +93,8 @@ def _follow_lr_yaw(
     err = (cx - fw * 0.5) / max(fw * 0.5, 1.0)
     if abs(err) < 0.06:
         return 0, 0
-    lr = int(np.clip(-err * 72.0, -100, 100))
+    # Strafe and yaw toward the target together (Tello: +lr = right, +yaw = clockwise).
+    lr = int(np.clip(err * 35.0, -100, 100))
     yaw = int(np.clip(err * 58.0, -100, 100))
     return lr, yaw
 
@@ -111,7 +118,7 @@ def run_pc_control_loop(
     else:
         drone = DroneController(config)
         drone.connect()
-    inp = PcInputController()
+    inp = PcInputController(focus_window=win)
     try:
         inp.start()
     except Exception:
@@ -142,7 +149,6 @@ def run_pc_control_loop(
     last_embedding: np.ndarray | None = None
     last_face_name: str | None = None
     last_face_score = 0.0
-    battery_pct: int | None = None
     fpv_on = bool(dcfg.get("show_tello_fpv", False))
     stale_sec = float(dcfg.get("fpv_stale_seconds", 5.0))
     last_good_fpv = time.monotonic()
@@ -163,6 +169,7 @@ def run_pc_control_loop(
 
     try:
         print(f"[session] switch modes: {MODE_SWITCH_HINT}")
+        print(f"[manual] flight keys work only while the '{win}' window is focused")
         while True:
             try:
                 if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
@@ -178,14 +185,13 @@ def run_pc_control_loop(
                 frame = raw_fpv
                 last_good_fpv = time.monotonic()
                 fpv_stale_warned = False
-            elif sim_webcam is not None:
+            elif sim_webcam is not None and not drone.is_live_tello:
                 wf = sim_webcam.read_frame()
                 frame = wf if wf is not None else _blank_frame("No webcam frame")
             else:
                 frame = _blank_frame("No FPV frame — check stream / Wi-Fi")
 
-            if drone.is_live_tello:
-                battery_pct = drone.get_battery_percent(min_interval_sec=1.0)
+            flight_status = drone.poll_flight_status()
 
             lr, fb, ud, yaw = inp.compute_manual_rc()
 
@@ -207,9 +213,18 @@ def run_pc_control_loop(
                     print(f"[manual] N ignored: already recognized as {last_face_name}.")
                 else:
                     try:
-                        name = input("שם לשמירה במאגר: ").strip()
+                        drone.send_rc(0, 0, 0, 0)
+                    except Exception:
+                        pass
+                    inp.paused = True
+                    try:
+                        name = input("Name to save in gallery: ").strip()
                     except (EOFError, KeyboardInterrupt):
                         name = ""
+                    finally:
+                        inp.paused = False
+                        inp.clear_pending()
+                        lr, fb, ud, yaw = 0, 0, 0, 0
                     if not name:
                         print("[manual] save cancelled.")
                     else:
@@ -231,11 +246,15 @@ def run_pc_control_loop(
                 hand_mode = not hand_mode
                 if hand_mode:
                     try:
+                        drone.send_rc(0, 0, 0, 0)
+                    except Exception:
+                        pass
+                    try:
                         if hand_det is not None:
                             hand_det.close()
                             hand_det = None
                         if hand_cam is not None:
-                            hand_cam.release()
+                            _release_cam(hand_cam, sim_webcam)
                             hand_cam = None
 
                         from app.run_gesture_session import _run_open_palm_calibration
@@ -249,8 +268,12 @@ def run_pc_control_loop(
                         selected_idx = None
                         for ci in candidate_idxs:
                             try:
-                                hand_cam = Webcam(camera_index=ci)
-                                hand_cam.open()
+                                if sim_webcam is not None and sim_webcam.camera_index == ci:
+                                    # Session already holds this camera; DirectShow may refuse a second open.
+                                    hand_cam = sim_webcam
+                                else:
+                                    hand_cam = Webcam(camera_index=ci)
+                                    hand_cam.open()
                                 hand_det = HandDetector()
                                 print(f"[manual] hand camera probe index={ci}")
                                 palm_ref, calib_meta = _run_open_palm_calibration(
@@ -274,7 +297,7 @@ def run_pc_control_loop(
                                         pass
                                     hand_det = None
                                 if hand_cam is not None:
-                                    hand_cam.release()
+                                    _release_cam(hand_cam, sim_webcam)
                                     hand_cam = None
                                 continue
                         if selected_idx is None:
@@ -310,7 +333,7 @@ def run_pc_control_loop(
                                 pass
                             hand_det = None
                         if hand_cam is not None:
-                            hand_cam.release()
+                            _release_cam(hand_cam, sim_webcam)
                             hand_cam = None
                         hand_analyzer = None
                 else:
@@ -322,7 +345,7 @@ def run_pc_control_loop(
                             pass
                         hand_det = None
                     if hand_cam is not None:
-                        hand_cam.release()
+                        _release_cam(hand_cam, sim_webcam)
                         hand_cam = None
                     hand_analyzer = None
 
@@ -390,8 +413,8 @@ def run_pc_control_loop(
                 lr, fb, ud, yaw = 0, 0, 0, 0
                 if not fpv_stale_warned:
                     print(
-                        "[manual] FPV לא מתעדכן — מאפסים RC "
-                        f"(>{stale_sec:.0f}s; fpv_stale_seconds ב-config)"
+                        "[manual] FPV STALE — zeroing RC "
+                        f"(>{stale_sec:.0f}s; fpv_stale_seconds in config)"
                     )
                     fpv_stale_warned = True
 
@@ -404,11 +427,11 @@ def run_pc_control_loop(
                         name, sc = face_gallery.best_match(emb)
                         last_face_name = name
                         last_face_score = float(sc)
-                        last_face_label = f"{name or 'לא ידוע'} ({sc:.2f})"
+                        last_face_label = f"{name or 'unknown'} ({sc:.2f})"
                     else:
                         last_face_name = None
                         last_face_score = 0.0
-                        last_face_label = "לא זוהתה פנים"
+                        last_face_label = "no face detected"
                 elif face_detector is not None:
                     res = face_detector.process_frame(frame)
                     fl = face_detector.first_face_landmarks(res)
@@ -422,20 +445,22 @@ def run_pc_control_loop(
                         name, sc = face_gallery.best_match(emb)
                         last_face_name = name
                         last_face_score = float(sc)
-                        last_face_label = f"{name or 'לא ידוע'} ({sc:.2f})"
+                        last_face_label = f"{name or 'unknown'} ({sc:.2f})"
                     else:
                         last_face_name = None
                         last_face_score = 0.0
-                        last_face_label = "לא זוהתה פנים"
+                        last_face_label = "no face detected"
             elif not face_id_mode:
                 last_face_label = "face-id: off (I to enable)"
 
             if inp.takeoff_requested:
                 inp.takeoff_requested = False
                 try:
+                    was_airborne = drone.is_airborne
                     drone.send_rc(0, 0, 0, 0)
                     drone.takeoff()
-                    print("[manual] takeoff")
+                    if not was_airborne:
+                        print("[manual] takeoff")
                 except Exception as exc:
                     print(f"[manual] takeoff: {exc}")
 
@@ -461,8 +486,8 @@ def run_pc_control_loop(
                     else (last_face_label or "—")
                 ),
                 fpv_stale=fpv_stale,
-                battery_pct=battery_pct,
             )
+            draw_flight_status(frame, flight_status)
             cv2.imshow(win, frame)
             key = cv2.waitKey(1) & 0xFF
             requested_mode = MODE_SWITCH_KEYS.get(key)
@@ -478,7 +503,7 @@ def run_pc_control_loop(
             except Exception:
                 pass
         if hand_cam is not None:
-            hand_cam.release()
+            _release_cam(hand_cam, sim_webcam)
         inp.stop()
         try:
             drone.send_rc(0, 0, 0, 0)

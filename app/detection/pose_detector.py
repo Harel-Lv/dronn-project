@@ -8,7 +8,8 @@ import numpy as np
 
 from mediapipe.tasks.python.core import base_options
 from mediapipe.tasks.python.vision import pose_landmarker
-from mediapipe.tasks.python.vision.core import vision_task_running_mode
+
+from app.detection.mp_video import VideoTimestamps, running_mode
 
 # MediaPipe API changed across versions; support both import paths.
 try:
@@ -34,7 +35,7 @@ def _pose_model_path() -> str:
 
 
 class PoseDetector:
-    def __init__(self, min_confidence: float = 0.5):
+    def __init__(self, min_confidence: float = 0.5, *, video: bool = True):
         path = _pose_model_path()
         if not os.path.exists(path):
             raise FileNotFoundError(
@@ -42,7 +43,7 @@ class PoseDetector:
             )
         options = pose_landmarker.PoseLandmarkerOptions(
             base_options=base_options.BaseOptions(model_asset_path=path),
-            running_mode=vision_task_running_mode.VisionTaskRunningMode.IMAGE,
+            running_mode=running_mode(video),
             num_poses=1,
             min_pose_detection_confidence=min_confidence,
             min_pose_presence_confidence=min_confidence,
@@ -51,10 +52,14 @@ class PoseDetector:
         )
         self._lm = pose_landmarker.PoseLandmarker.create_from_options(options)
         self._connections = pose_landmarker.PoseLandmarksConnections.POSE_LANDMARKS
+        self._clock = VideoTimestamps() if video else None
 
     def process_frame(self, frame: np.ndarray):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return self._lm.detect(MpImage(ImageFormat.SRGB, rgb))
+        img = MpImage(ImageFormat.SRGB, rgb)
+        if self._clock is not None:
+            return self._lm.detect_for_video(img, self._clock.next_ms())
+        return self._lm.detect(img)
 
     def draw_landmarks(self, frame: np.ndarray, results) -> None:
         if not results.pose_landmarks:

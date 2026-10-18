@@ -24,5 +24,5 @@ def select_dominant_hand_landmarks(
     for lm, label in hands_with_labels:
         if (label or "").strip() == want:
             return lm
-    # חשוב: לא נשבור התנהגות — אם אין התאמה (מצלמה / חוסר ביטחון), ניקח יד ראשונה
+    # Keep behavior stable: if no match (mirrored camera / low confidence), take the first hand
     return hands_with_labels[0][0]

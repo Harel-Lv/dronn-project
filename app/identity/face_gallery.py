@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from app.identity.face_profile import cosine_match
+from app.identity.face_profile import LEGACY_LANDMARK_EMBEDDING_SIZE, cosine_match
 
 
 def _safe_filename_stem(display_name: str, max_len: int = 40) -> str:
@@ -52,12 +52,12 @@ def save_embedding_to_gallery_file(
 def prompt_display_name_mandatory() -> str:
     while True:
         try:
-            raw = input("שם למאגר (חובה, יוצג בזיהוי): ").strip()
+            raw = input("Gallery name (required, shown on match): ").strip()
         except EOFError:
             return ""
         if raw:
             return raw
-        print("  חובה להזין שם — נסה שוב.")
+        print("  A name is required — try again.")
 
 
 def refresh_gallery_with_runtime_allowed(
@@ -102,6 +102,7 @@ class FaceGallery:
         self._profiles.clear()
         if not self.gallery_dir.is_dir():
             return 0
+        legacy: list[str] = []
         for p in sorted(self.gallery_dir.glob("*.npz")):
             try:
                 data = np.load(p, allow_pickle=True)
@@ -113,9 +114,16 @@ class FaceGallery:
                     continue
                 emb = emb / n
                 name = str(data["name"]) if "name" in data.files else p.stem
+                if emb.size == LEGACY_LANDMARK_EMBEDDING_SIZE:
+                    legacy.append(name)
                 self._profiles.append((emb, name))
             except Exception:
                 continue
+        if legacy:
+            print(
+                f"[gallery] WARNING: {len(legacy)} face(s) in old landmarks format will never match "
+                f"({', '.join(legacy)}) — re-register them (N in manual mode)."
+            )
         return len(self._profiles)
 
     def add_from_npz_file(
@@ -241,7 +249,7 @@ def face_gallery_from_config(config: dict) -> FaceGallery:
     if bool(fcfg.get("include_identity_profile", True)):
         if backend == "insightface":
             print(
-                "[fpv_faces] לא טוען profile.npz של identity — לא תואם ל-insightface."
+                "[fpv_faces] not loading identity profile.npz — incompatible with insightface."
             )
         else:
             id_path = Path(str(icfg.get("profile_path", "data/identity/profile.npz")))
@@ -270,8 +278,8 @@ def registration_face_precheck_message(
     nm, sc = gallery.closest_profile_score(embedding)
     if nm is not None and sc >= thr:
         return (
-            f'[מאגר] פרצוף זה כבר רשום כמוכר תחת "{nm}" '
-            f"(דמיון {sc:.2f} ≥ {thr:.2f}) — אי אפשר לרשום פעמיים."
+            f'[gallery] this face is already registered as "{nm}" '
+            f"(similarity {sc:.2f} >= {thr:.2f}) — cannot register twice."
         )
     return None
 
@@ -281,7 +289,7 @@ def registration_name_precheck_message(
 ) -> str | None:
     name = str(display_name).strip()
     if not name:
-        return "[מאגר] שם ריק."
+        return "[gallery] empty name."
     if gallery.has_profile_name(name):
-        return f'[מאגר] השם "{name}" כבר קיים במאגר — בחר שם אחר.'
+        return f'[gallery] the name "{name}" already exists — choose another name.'
     return None

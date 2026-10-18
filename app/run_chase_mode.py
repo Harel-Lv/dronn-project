@@ -10,11 +10,19 @@ import numpy as np
 from pynput import keyboard
 
 from app.drone.drone_controller import DroneController
+from app.drone.rc_smoothing import ErrorRate, RcSmoother
+from app.input.pc_controller import foreground_window_title
 from app.identity.identity_perf import resize_frame_max_width, scale_bbox
-from app.session_modes import MODE_SWITCH_HINT, MODE_SWITCH_KEYS, SESSION_MAIN_WINDOW
-from app.ui.operator_hud import draw_operator_hud
+from app.session_modes import (
+    MODE_SWITCH_HINT,
+    MODE_SWITCH_KEYS,
+    SESSION_MAIN_WINDOW,
+    is_quit_key,
+)
+from app.ui.operator_hud import draw_flight_status, draw_operator_hud
 
-_CHASE_WINDOW = "Chase — Tello FPV"
+# ASCII only: OpenCV's Win32 backend garbles non-ASCII titles, which breaks focus checks.
+_CHASE_WINDOW = "Chase - Tello FPV"
 _SIM_WINDOW = SESSION_MAIN_WINDOW
 _VK_SPACE = 0x20
 _RED_BGR = (0, 0, 255)
@@ -81,8 +89,8 @@ class _SpaceHoldController:
         except OSError as exc:
             hint = ""
             if sys.platform == "win32":
-                hint = " נסה להריץ PowerShell כמנהל."
-            raise RuntimeError(f"pynput לא זמין למצב chase.{hint} {exc}") from exc
+                hint = " Try running PowerShell as administrator."
+            raise RuntimeError(f"pynput unavailable for chase mode.{hint} {exc}") from exc
 
     def stop(self) -> None:
         if self._listener is not None:
@@ -92,8 +100,14 @@ class _SpaceHoldController:
         self._space_since = None
         self.chase_armed = False
 
-    def update(self) -> bool:
-        """Return True when Space held long enough to chase."""
+    def update(self, focus_window: str | None = None) -> bool:
+        """Return True when Space held long enough to chase (and the chase window is focused)."""
+        if focus_window is not None:
+            title = foreground_window_title()
+            if title is not None and title != focus_window:
+                self._space_since = None
+                self.chase_armed = False
+                return False
         if self._space_since is None:
             self.chase_armed = False
             return False
@@ -119,7 +133,7 @@ def _bbox_to_target(
 
 def _detect_largest_face(insight, frame: np.ndarray, max_width: int) -> FaceTarget | None:
     small, inv_scale = resize_frame_max_width(frame, max_width)
-    _emb, bbox = insight.embed(small)
+    bbox = insight.detect_largest_bbox(small)
     if bbox is None:
         return None
     scaled = scale_bbox(bbox, inv_scale)
@@ -129,18 +143,26 @@ def _detect_largest_face(insight, frame: np.ndarray, max_width: int) -> FaceTarg
     return _bbox_to_target(scaled, fw, fh)
 
 
+def _err_x(target: FaceTarget, frame_w: int) -> float:
+    return (target.cx - frame_w * 0.5) / max(frame_w * 0.5, 1.0)
+
+
 def _compute_chase_rc(
     target: FaceTarget,
     frame_w: int,
     *,
     max_speed: int,
     stop_size_ratio: float,
+    err_rate: float = 0.0,
+    derivative_gain: float = 0.0,
 ) -> tuple[int, int, int, int]:
     if target.size_ratio >= stop_size_ratio:
         return 0, 0, 0, 0
-    err_x = (target.cx - frame_w * 0.5) / max(frame_w * 0.5, 1.0)
-    lr = int(np.clip(-err_x * 78.0, -max_speed, max_speed))
-    yaw = int(np.clip(err_x * 62.0, -max_speed, max_speed))
+    err_x = _err_x(target, frame_w)
+    # Strafe and yaw toward the target together (Tello: +lr = right, +yaw = clockwise);
+    # the rate term damps overshoot.
+    lr = int(np.clip(err_x * 40.0 + err_rate * derivative_gain * 0.6, -max_speed, max_speed))
+    yaw = int(np.clip(err_x * 62.0 + err_rate * derivative_gain, -max_speed, max_speed))
     fb = int(max_speed)
     return lr, fb, 0, yaw
 
@@ -190,6 +212,12 @@ def run_chase_loop(
     hold_sec = float(ccfg.get("hold_seconds", 0.35))
     stop_size_ratio = float(ccfg.get("stop_size_ratio", 0.32))
     stale_sec = float(dcfg.get("fpv_stale_seconds", 5.0))
+    derivative_gain = float(ccfg.get("derivative_gain", 10.0))
+    smoother = RcSmoother(
+        alpha=float(ccfg.get("smoothing_alpha", 0.4)),
+        max_step=int(ccfg.get("max_rc_step", 20)),
+    )
+    rate_x = ErrorRate()
 
     owns_drone = session_ctx is None
     if session_ctx is not None:
@@ -197,7 +225,7 @@ def run_chase_loop(
     else:
         drone = DroneController(config)
         drone.connect()
-    use_fpv = bool(dcfg.get("show_tello_fpv", False)) and drone.is_live_tello
+    use_fpv = drone.is_live_tello
     win = _CHASE_WINDOW if use_fpv else _SIM_WINDOW
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
 
@@ -205,9 +233,9 @@ def run_chase_loop(
     hold.start()
 
     print(
-        f"[chase] מקור: {'Tello FPV' if use_fpv else 'מצלמת מחשב (סימולציה)'}\n"
-        "  פנים בפריים = מסגרת אדומה (הגדולה ביותר)\n"
-        f"  החזק רווח (Space) ~{hold_sec:.1f}s+ = האצה מקסימלית | T המראה | L נחיתה"
+        f"[chase] video source: {'Tello FPV' if use_fpv else 'PC webcam (SIMULATION)'}\n"
+        "  face in frame = red box (largest face)\n"
+        f"  hold SPACE ~{hold_sec:.1f}s+ = full speed | T takeoff | L land"
     )
     print(f"[session] switch modes: {MODE_SWITCH_HINT}")
 
@@ -240,16 +268,18 @@ def run_chase_loop(
                 and (time.monotonic() - last_good_video) >= stale_sec
             )
             if video_stale and not fpv_stale_warned:
-                print(f"[chase] FPV לא מתעדכן — עוצרים RC (>{stale_sec:.0f}s)")
+                print(f"[chase] FPV STALE — stopping RC (>{stale_sec:.0f}s)")
                 fpv_stale_warned = True
 
-            chasing = hold.update()
+            chasing = hold.update(focus_window=win)
             target: FaceTarget | None = None
             if not video_stale and frame is not None and frame.size > 0:
-                if frame_idx % process_every == 0:
-                    target = _detect_largest_face(insight, frame, max_width)
+                fresh = frame_idx % process_every == 0 or raw is None
+                if fresh:
+                    target = None if raw is None else _detect_largest_face(insight, frame, max_width)
                     if target is not None:
                         last_target = target
+                        rate_x.update(_err_x(target, frame.shape[1]))
                 else:
                     target = last_target
 
@@ -258,12 +288,15 @@ def run_chase_loop(
             if target is None:
                 status = "NO FACE"
                 last_target = None
+                rate_x.reset()
             elif chasing and drone.is_airborne and not video_stale:
                 lr, fb, _, yaw = _compute_chase_rc(
                     target,
                     frame.shape[1],
                     max_speed=max_speed,
                     stop_size_ratio=stop_size_ratio,
+                    err_rate=rate_x.rate,
+                    derivative_gain=derivative_gain,
                 )
                 if fb == 0 and target.size_ratio >= stop_size_ratio:
                     status = "TOO CLOSE — stop"
@@ -274,11 +307,13 @@ def run_chase_loop(
             elif target is not None:
                 status = "TARGET LOCKED — hold SPACE"
 
+            if chasing and drone.is_airborne and target is not None and not video_stale:
+                lr, fb, _, yaw = smoother.update((lr, fb, 0, yaw))
+            else:
+                lr = fb = yaw = 0
+                smoother.reset()
             try:
-                if chasing and drone.is_airborne and target is not None and not video_stale:
-                    drone.send_rc(lr, fb, 0, yaw)
-                else:
-                    drone.send_rc(0, 0, 0, 0)
+                drone.send_rc(lr, fb, 0, yaw)
             except Exception as exc:
                 print(f"[chase] RC: {exc}")
 
@@ -292,6 +327,7 @@ def run_chase_loop(
                 yaw=yaw,
                 is_sim=not drone.is_live_tello,
             )
+            draw_flight_status(frame, drone.poll_flight_status())
             cv2.imshow(win, frame)
 
             key = cv2.waitKey(1) & 0xFF
@@ -299,7 +335,7 @@ def run_chase_loop(
             if requested:
                 requested_mode = requested
                 break
-            if key in (27, ord("q")):
+            if is_quit_key(key, drone):
                 break
             if key in (ord("t"), ord("T")):
                 try:

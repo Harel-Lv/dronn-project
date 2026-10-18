@@ -6,7 +6,7 @@ import math
 # MediaPipe hand indices
 _WRIST = 0
 _THUMB_TIP, _THUMB_IP, _THUMB_MCP = 4, 3, 2
-_INDEX_TIP, _INDEX_PIP = 8, 6
+_INDEX_TIP, _INDEX_PIP, _INDEX_MCP = 8, 6, 5
 _MIDDLE_TIP, _MIDDLE_PIP = 12, 10
 _MIDDLE_MCP = 9
 _RING_TIP, _RING_PIP = 16, 14
@@ -19,6 +19,14 @@ _G_OPEN = "OPEN_PALM"
 _G_POINT = "POINT"
 _G_PEACE = "PEACE"
 _G_THUMB_UP = "THUMB_UP"
+_G_PINKY = "PINKY"
+_G_THREE = "THREE"
+_G_ROCK = "ROCK"
+_G_GUN = "GUN"
+
+# GUN needs the thumb clearly spread away from the index knuckle so a relaxed
+# thumb while pointing stays POINT (forward) instead of rotating.
+_GUN_THUMB_SPREAD = 0.6
 
 
 def _dist(a: tuple[int, int], b: tuple[int, int]) -> float:
@@ -26,7 +34,7 @@ def _dist(a: tuple[int, int], b: tuple[int, int]) -> float:
 
 
 def palm_span_pixels(lm: dict[int, tuple[int, int]]) -> float | None:
-    """Scale proxy: מרחק שורש כף–אמצע (MCP) — לכיול מרחק מהמצלמה."""
+    """Scale proxy: wrist-to-middle-MCP distance — for camera distance calibration."""
     if _WRIST not in lm or _MIDDLE_MCP not in lm:
         return None
     return _dist(lm[_WRIST], lm[_MIDDLE_MCP])
@@ -37,7 +45,7 @@ def likely_open_palm_for_calibration(
     *,
     loose_finger_ratio: float = 1.05,
 ) -> bool:
-    """בדיקה רופפת לכיול בלבד — ארבע אצבעות פתוחות (בלי לחייב אגודל)."""
+    """Loose check for calibration only — four fingers extended (thumb not required)."""
     if _WRIST not in lm:
         return False
 
@@ -109,6 +117,12 @@ class MotionAnalyzer:
         ratio = self._thumb_ratio(lm)
         return _dist(w, t) > _dist(w, ip) * ratio
 
+    def _thumb_spread(self, lm: dict[int, tuple[int, int]]) -> bool:
+        palm = palm_span_pixels(lm)
+        if palm is None or _THUMB_TIP not in lm or _INDEX_MCP not in lm:
+            return False
+        return _dist(lm[_THUMB_TIP], lm[_INDEX_MCP]) > palm * _GUN_THUMB_SPREAD
+
     def analyze_hands(self, hands: list[dict[int, tuple[int, int]]]) -> str:
         if not hands:
             return _G_NONE
@@ -122,16 +136,24 @@ class MotionAnalyzer:
         fingers = (idx, mid, ring, pink)
         n = sum(1 for x in fingers if x)
 
-        # סדר חשוב: אצבע מצביעה לפני "אגודל למעלה" — כדי שלא יבלבל עם הצבעה למעלה
+        # Order matters: check pointing finger before "thumb up" so it isn't confused with pointing up
         if n == 0 and not thumb:
             return _G_FIST
         if n >= 4:
             return _G_OPEN
         if n == 2 and idx and mid and not ring and not pink:
             return _G_PEACE
+        if n == 2 and idx and pink and not mid and not ring:
+            return _G_ROCK
+        if n == 3 and idx and mid and ring and not pink:
+            return _G_THREE
         if n == 1 and idx:
+            if thumb and self._thumb_spread(lm):
+                return _G_GUN
             return _G_POINT
-        # אגודל למעלה קלאסי: רק האגודל בחוץ, ארבע האצבעות מקופות (בלי אצבע מצביעה)
+        if n == 1 and pink:
+            return _G_PINKY
+        # Classic thumb up: only the thumb out, four fingers curled (no pointing finger)
         if thumb and n == 0:
             return _G_THUMB_UP
         return _G_UNKNOWN

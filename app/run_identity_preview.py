@@ -8,9 +8,9 @@ from app.detection.face_landmarker_detector import FaceLandmarkerDetector
 from app.identity.enroll_ui import run_identity_enroll_wizard
 from app.identity.face_profile import FaceProfileStore, face_landmarks_to_embedding
 from app.identity.identity_perf import CachedInsightFaceVerifier, identity_perf_settings
-from app.ui.operator_hud import draw_operator_hud
+from app.ui.operator_hud import draw_flight_status, draw_operator_hud
 
-from app.session_modes import MODE_SWITCH_HINT, MODE_SWITCH_KEYS
+from app.session_modes import MODE_SWITCH_HINT, MODE_SWITCH_KEYS, is_quit_key
 
 
 def _landmarks_to_bbox(
@@ -35,7 +35,32 @@ def _landmarks_to_bbox(
     return xi0, yi0, xi1, yi1
 
 
-def _draw_no_face_overlay(frame: np.ndarray, window_name: str) -> int:
+def _session_drone(session_ctx):
+    return session_ctx.drone if session_ctx is not None else None
+
+
+def _handle_land_key(key: int, session_ctx) -> None:
+    """Identity mode sends no RC, but L must still land a drone that was airborne on entry."""
+    if key not in (ord("l"), ord("L")) or session_ctx is None:
+        return
+    drone = session_ctx.drone
+    if drone is None:
+        return
+    print("[identity] EMERGENCY LAND (L)")
+    try:
+        drone.send_rc(0, 0, 0, 0)
+        drone.land()
+    except Exception as exc:
+        print(f"[identity] land error: {exc}")
+
+
+def _draw_flight_status(frame: np.ndarray, session_ctx) -> None:
+    drone = _session_drone(session_ctx)
+    if drone is not None:
+        draw_flight_status(frame, drone.poll_flight_status())
+
+
+def _draw_no_face_overlay(frame: np.ndarray, window_name: str, session_ctx=None) -> int:
     """Show 'no face', return waitKey code."""
     draw_operator_hud(
         frame,
@@ -43,6 +68,7 @@ def _draw_no_face_overlay(frame: np.ndarray, window_name: str) -> int:
         command="no face in frame",
         mode_for_keys="identity",
     )
+    _draw_flight_status(frame, session_ctx)
     cv2.imshow(window_name, frame)
     return cv2.waitKey(1) & 0xFF
 
@@ -84,7 +110,7 @@ def run_identity_preview_loop(
             if insight_verifier is not None
             else ""
         )
-        + f"\n  N = enroll on screen | q / Esc = quit"
+        + f"\n  N = enroll on screen | L = land | Esc = quit (q only when landed)"
     )
     print(f"[session] switch modes: {MODE_SWITCH_HINT}")
 
@@ -130,12 +156,14 @@ def run_identity_preview_loop(
                     detail="press N to enroll your face",
                     mode_for_keys="identity",
                 )
+                _draw_flight_status(frame, session_ctx)
                 cv2.imshow(win, frame)
                 key = cv2.waitKey(1) & 0xFF
+                _handle_land_key(key, session_ctx)
                 requested_mode = MODE_SWITCH_KEYS.get(key)
                 if requested_mode:
                     break
-                if key in (27, ord("q")):
+                if is_quit_key(key, _session_drone(session_ctx)):
                     break
                 if key in (ord("n"), ord("N")):
                     _run_enroll_wizard(initial_name="")
@@ -149,11 +177,12 @@ def run_identity_preview_loop(
             if eb == "insightface" and insight_verifier is not None:
                 result = insight_verifier.process(frame)
                 if not result.face_detected:
-                    k = _draw_no_face_overlay(frame, win)
+                    k = _draw_no_face_overlay(frame, win, session_ctx)
+                    _handle_land_key(k, session_ctx)
                     requested_mode = MODE_SWITCH_KEYS.get(k)
                     if requested_mode:
                         break
-                    if k in (27, ord("q")):
+                    if is_quit_key(k, _session_drone(session_ctx)):
                         break
                     if k in (ord("n"), ord("N")):
                         _run_enroll_wizard(initial_name=store.display_name)
@@ -166,11 +195,12 @@ def run_identity_preview_loop(
                 res = face_lm.process_frame(frame)
                 fl = face_lm.first_face_landmarks(res)
                 if fl is None:
-                    k = _draw_no_face_overlay(frame, win)
+                    k = _draw_no_face_overlay(frame, win, session_ctx)
+                    _handle_land_key(k, session_ctx)
                     requested_mode = MODE_SWITCH_KEYS.get(k)
                     if requested_mode:
                         break
-                    if k in (27, ord("q")):
+                    if is_quit_key(k, _session_drone(session_ctx)):
                         break
                     if k in (ord("n"), ord("N")):
                         _run_enroll_wizard(initial_name=store.display_name)
@@ -186,7 +216,9 @@ def run_identity_preview_loop(
                     mode_for_keys="identity",
                 )
                 cv2.imshow(win, frame)
-                if (cv2.waitKey(1) & 0xFF) in (27, ord("q")):
+                key = cv2.waitKey(1) & 0xFF
+                _handle_land_key(key, session_ctx)
+                if is_quit_key(key, _session_drone(session_ctx)):
                     break
                 continue
 
@@ -213,12 +245,14 @@ def run_identity_preview_loop(
                 command_locked=ok,
             )
 
+            _draw_flight_status(frame, session_ctx)
             cv2.imshow(win, frame)
             key = cv2.waitKey(1) & 0xFF
+            _handle_land_key(key, session_ctx)
             requested_mode = MODE_SWITCH_KEYS.get(key)
             if requested_mode:
                 break
-            if key in (27, ord("q")):
+            if is_quit_key(key, _session_drone(session_ctx)):
                 break
             if key in (ord("n"), ord("N")):
                 _run_enroll_wizard(initial_name=store.display_name)
