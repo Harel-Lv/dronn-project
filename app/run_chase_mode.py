@@ -243,6 +243,7 @@ def run_chase_loop(
     last_target: FaceTarget | None = None
     last_good_video = time.monotonic()
     fpv_stale_warned = False
+    last_takeoff_key = 0.0
     requested_mode: str | None = None
 
     try:
@@ -337,10 +338,14 @@ def run_chase_loop(
                 break
             if is_quit_key(key, drone):
                 break
-            if key in (ord("t"), ord("T")):
+            if key in (ord("t"), ord("T")) and time.monotonic() - last_takeoff_key >= 1.5:
+                # Holding T auto-repeats every frame; each takeoff() call may query height.
+                last_takeoff_key = time.monotonic()
                 try:
+                    was_airborne = drone.is_airborne
                     drone.takeoff()
-                    print("[chase] takeoff")
+                    if not was_airborne:
+                        print("[chase] takeoff")
                 except Exception as exc:
                     print(f"[chase] takeoff: {exc}")
             if key in (ord("l"), ord("L")):

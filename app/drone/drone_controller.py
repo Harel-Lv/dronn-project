@@ -56,6 +56,8 @@ class DroneController:
         self._fpv_last_new_at = 0.0
         self._fpv_started = False
         self._fpv_failed = False
+        self._fpv_restarting = False
+        self._fpv_restart_at = 0.0
         self._state_last_obj: Any = None
         self._state_last_at = 0.0
         self._link_lost = False
@@ -528,13 +530,14 @@ class DroneController:
         """
         if self._frame_reader is None:
             return None
+        now = time.monotonic()
+        self._fpv_watchdog(now)
         try:
             f = self._frame_reader.frame
         except Exception:
             return None
         if f is None or f.size == 0:
             return None
-        now = time.monotonic()
         if f is not self._fpv_last_obj:
             self._fpv_last_obj = f
             self._fpv_last_new_at = now
@@ -554,6 +557,45 @@ class DroneController:
         # Callers draw HUD on the frame; the loop runs faster than video, so the same
         # frame is returned repeatedly and must not carry previous overlays into detection.
         return self._fpv_last_bgr.copy()
+
+    def _fpv_watchdog(self, now: float) -> None:
+        """
+        djitellopy's decoder thread dies for good on a UDP read error (av.error.OSError) and
+        the reader keeps serving the last frame, so reopen the decoder in the background.
+        """
+        reader = self._frame_reader
+        worker = getattr(reader, "worker", None)
+        if worker is None or worker.is_alive() or self._fpv_restarting:
+            return
+        if now - self._fpv_restart_at < 3.0:
+            return
+        self._fpv_restart_at = now
+        self._fpv_restarting = True
+        threading.Thread(target=self._restart_fpv_decoder, args=(reader,), daemon=True).start()
+
+    def _restart_fpv_decoder(self, dead_reader: Any) -> None:
+        try:
+            tello = self._tello
+            if tello is None or self._frame_reader is not dead_reader:
+                return
+            print("[drone] FPV decoder stopped (video read error) - reopening stream...")
+            try:
+                dead_reader.stop()
+                dead_reader.container.close()
+            except Exception:
+                pass
+            # Only the decoder is reopened: the Tello keeps streaming after streamon, and SDK
+            # commands from this thread would block / mix replies with the control loop.
+            tello.background_frame_read = None
+            reader = tello.get_frame_read()
+            self._fpv_started = False
+            self._fpv_last_obj = None
+            self._frame_reader = reader
+            print("[drone] FPV stream reopened")
+        except Exception as exc:
+            print(f"[drone] FPV reopen failed: {exc} - retrying")
+        finally:
+            self._fpv_restarting = False
 
     @property
     def last_rc(self) -> tuple[int, int, int, int]:

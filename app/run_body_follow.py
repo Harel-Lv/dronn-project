@@ -371,6 +371,7 @@ def run_body_follow_loop(
     last_good_video = time.monotonic()
     last_metrics: BodyMetrics | None = None
     fpv_stale_warned = False
+    last_takeoff_key = 0.0
 
     try:
         while True:
@@ -476,10 +477,14 @@ def run_body_follow_loop(
                 break
             if is_quit_key(key, drone):
                 break
-            if key in (ord("t"), ord("T")):
+            if key in (ord("t"), ord("T")) and time.monotonic() - last_takeoff_key >= 1.5:
+                # Holding T auto-repeats every frame; each takeoff() call may query height.
+                last_takeoff_key = time.monotonic()
                 try:
+                    was_airborne = drone.is_airborne
                     drone.takeoff()
-                    print("[follow] takeoff")
+                    if not was_airborne:
+                        print("[follow] takeoff")
                 except Exception as exc:
                     print(f"[follow] takeoff: {exc}")
             if key in (ord("l"), ord("L")):

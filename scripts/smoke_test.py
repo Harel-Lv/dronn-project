@@ -113,6 +113,36 @@ def _drone_logic_checks() -> None:
         _fail("frozen FPV stream must read as no frame")
     _ok("FPV placeholder / BGR / copy / freeze")
 
+    import threading
+
+    dead = threading.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+
+    class DeadReader:
+        worker = dead
+        frame = rgb
+
+        def stop(self):
+            pass
+
+    class FreshReader:
+        worker = threading.current_thread()
+        frame = rgb.copy()
+
+    d = _live_drone()
+    d._tello.background_frame_read = DeadReader()
+    d._tello.get_frame_read = lambda: FreshReader()
+    d._frame_reader = d._tello.background_frame_read
+    d.read_fpv_frame()
+    for _ in range(50):
+        if not d._fpv_restarting and isinstance(d._frame_reader, FreshReader):
+            break
+        time.sleep(0.02)
+    if not isinstance(d._frame_reader, FreshReader) or d.read_fpv_frame() is None:
+        _fail("dead FPV decoder thread must be reopened")
+    _ok("FPV decoder auto-reopen")
+
     d = _live_drone()
     d._cfg = dict(d._cfg, keepalive_idle_sec=1.0)
     d._airborne = True

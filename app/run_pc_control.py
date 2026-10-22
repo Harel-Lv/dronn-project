@@ -189,7 +189,7 @@ def run_pc_control_loop(
                 wf = sim_webcam.read_frame()
                 frame = wf if wf is not None else _blank_frame("No webcam frame")
             else:
-                frame = _blank_frame("No FPV frame — check stream / Wi-Fi")
+                frame = _blank_frame("No drone video - keys still work")
 
             flight_status = drone.poll_flight_status()
 
@@ -349,7 +349,22 @@ def run_pc_control_loop(
                         hand_cam = None
                     hand_analyzer = None
 
-            if (not hand_mode) and inp.follow_mode and pose_detector is not None:
+            fpv_stale = (
+                fpv_on
+                and stale_sec > 0
+                and drone.is_live_tello
+                and raw_fpv is None
+                and (time.monotonic() - last_good_fpv) >= stale_sec
+            )
+            if fpv_stale and not fpv_stale_warned:
+                print(
+                    "[manual] FPV STALE - keyboard / hands still fly the drone; "
+                    "FOLLOW paused until video returns"
+                )
+                fpv_stale_warned = True
+
+            follow_has_video = raw_fpv is not None or not drone.is_live_tello
+            if (not hand_mode) and inp.follow_mode and pose_detector is not None and follow_has_video:
                 if frame_idx % follow_every == 0:
                     flr, fyaw = _follow_lr_yaw(
                         pose_detector, frame, follow_max_w
@@ -401,22 +416,6 @@ def run_pc_control_loop(
                     lr, fb, ud, yaw = 0, 0, 0, 0
             else:
                 hand_seen = False
-
-            fpv_stale = (
-                fpv_on
-                and stale_sec > 0
-                and drone.is_live_tello
-                and raw_fpv is None
-                and (time.monotonic() - last_good_fpv) >= stale_sec
-            )
-            if fpv_stale:
-                lr, fb, ud, yaw = 0, 0, 0, 0
-                if not fpv_stale_warned:
-                    print(
-                        "[manual] FPV STALE — zeroing RC "
-                        f"(>{stale_sec:.0f}s; fpv_stale_seconds in config)"
-                    )
-                    fpv_stale_warned = True
 
             if face_id_mode and faces_available and frame_idx % face_every == 0:
                 if insightface_backend is not None:

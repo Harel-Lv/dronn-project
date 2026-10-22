@@ -1,7 +1,10 @@
 # Drone Gesture Control
 
-A computer vision project that detects hand gestures from a webcam
-and maps them into movement commands for a DJI Tello (or simulation).
+Hand gestures and body/face tracking from a webcam (or Tello FPV) mapped to DJI Tello RC commands — with simulation mode, safety telemetry, and optional C++ real-time control path.
+
+**Repo:** [github.com/Harel-Lv/dronn-project](https://github.com/Harel-Lv/dronn-project) · **License:** MIT · **Demo tips:** [`docs/DEMO.md`](docs/DEMO.md)
+
+פרויקט CV בעברית: מחוות יד, זיהוי פנים, מעקב גוף ורדיפה — לרחפן Tello או סימולציה.
 
 ## התקנה
 
@@ -40,7 +43,31 @@ python main.py --mode chase
 python main.py --mode gesture --tello --fpv
 python main.py --mode tracking --tello
 python main.py --mode chase --tello
+python main.py --mode manual --tello --fpv
 ```
+
+### בדיקות לפני טיסה
+
+```powershell
+python scripts/smoke_test.py          # לוגיקה בלי חומרה
+python scripts/verify_tello.py        # Wi‑Fi + Tello (בלי המראה)
+```
+
+## מחוות יד (מצב gesture / webcam_faces)
+
+| מחווה | פעולה |
+|--------|--------|
+| OPEN_PALM | ריחוף |
+| FIST | נחיתה |
+| THUMB_UP | המראה |
+| POINT (אצבע) | קדימה |
+| PEACE (✌️) | אחורה |
+| PINKY (זרת בלבד) | שמאלה (strafe) |
+| THREE (3 אצבעות, בלי זרת) | ימינה (strafe) |
+| ROCK 🤘 (אצבע+זרת) | סיבוב שמאלה |
+| GUN (אגודל+אצבע פרושים) | סיבוב ימינה |
+
+מצב **manual**: מקלדת WASD / R F / Q E; **H** = מחוות ממצלמת PC; מקשים פעילים רק כשחלון הסשן בפוקוס.
 
 ## Architecture overview
 
@@ -99,9 +126,11 @@ Real Tello today: keep `drone.backend: tello`. C++ Tello UDP backend is optional
 ### בטיחות (מחוות + Tello)
 
 - **L** — נחיתת חירום
-- **q / Esc** — יציאה (נחיתה אוטומטית אם הרחפן באוויר)
+- **q** — יציאה רק על הקרקע; **Esc** — יציאה תמיד
+- סוללה נמוכה / קישור אבוד / סטרים FPV קפוא — HUD + לוגיקה ב־`DroneController`
 - ראה `drone.land_on_disconnect` ב־`config.yaml`
-- מצב מעקב: RC תנועה רק **אחרי המראה** (T)
+- מצב מעקב / רדיפה: RC תנועה רק **אחרי המראה** (T)
+- **לא מוצר מסחרי** — טיסה באחריות המפעיל, מקום פתוח ורחוק מאנשים
 
 ## מצבים עיקריים
 
