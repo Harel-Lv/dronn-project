@@ -59,13 +59,22 @@ void TimingMetrics::maybe_print(uint64_t count, double interval_sec) {
     if (count == 0 || count % static_cast<uint64_t>(target_hz * interval_sec) != 0) {
         return;
     }
-    std::cout << "[metrics] target_hz=" << target_hz << " avg_period_ms=" << avg_period_ms
+    print_summary();
+}
+
+void TimingMetrics::print_summary() const {
+    TimingMetrics copy = *this;
+    std::vector<double> ring(copy.exec_ring_, copy.exec_ring_ + copy.exec_ring_n_);
+    const double p95 = percentile(ring, 0.95);
+    std::cout << "[metrics] loops=" << loop_count << " measured_hz=" << measured_hz
+              << " target_hz=" << target_hz << " avg_period_ms=" << avg_period_ms
               << " max_period_ms=" << max_period_ms << " avg_exec_ms=" << avg_exec_ms
-              << " max_exec_ms=" << max_exec_ms << " avg_jitter_ms=" << avg_jitter_ms
-              << " max_jitter_ms=" << max_jitter_ms << " deadline_misses=" << deadline_misses
-              << " rx=" << commands_received << " pkt_rejected=" << packets_rejected
-              << " fsm_rejected=" << fsm_rejected
+              << " max_exec_ms=" << max_exec_ms << " p95_exec_ms=" << p95
+              << " avg_jitter_ms=" << avg_jitter_ms << " max_jitter_ms=" << max_jitter_ms
+              << " deadline_misses=" << deadline_misses << " rx=" << commands_received
+              << " pkt_rejected=" << packets_rejected << " fsm_rejected=" << fsm_rejected
               << " wd_hover=" << watchdog_hover << " wd_safe=" << watchdog_safe
+              << " rc_fail=" << rc_send_failures
               << " avg_cmd_latency_ms=" << avg_command_latency_ms
               << " max_cmd_latency_ms=" << max_command_latency_ms << "\n";
 }

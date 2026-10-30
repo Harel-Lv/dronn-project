@@ -297,7 +297,11 @@ class DroneController:
                 return
         if self._rt_client is not None:
             with self._cmd_lock:
-                self._rt_client.takeoff()
+                try:
+                    self._rt_client.takeoff()
+                except Exception as exc:
+                    print(f"[drone] rt_cpp takeoff failed: {exc}")
+                    raise
                 self._last_cmd_at = time.monotonic()
             self._airborne = True
             return
@@ -338,7 +342,11 @@ class DroneController:
             unsure = True
         if self._rt_client is not None:
             with self._cmd_lock:
-                self._rt_client.land()
+                try:
+                    self._rt_client.land()
+                except Exception as exc:
+                    print(f"[drone] rt_cpp land failed (still marked airborne): {exc}")
+                    raise
                 self._last_cmd_at = time.monotonic()
             self._airborne = False
             return

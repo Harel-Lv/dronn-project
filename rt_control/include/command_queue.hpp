@@ -13,6 +13,7 @@ inline bool is_critical_command(CommandType type) {
         case CommandType::Land:
         case CommandType::Connect:
         case CommandType::Disconnect:
+        case CommandType::Recover:
             return true;
         default:
             return false;
@@ -23,6 +24,7 @@ inline int critical_command_priority(CommandType type) {
     switch (type) {
         case CommandType::Land:
         case CommandType::Disconnect:
+        case CommandType::Recover:
             return 2;
         case CommandType::Takeoff:
         case CommandType::Connect:
@@ -82,6 +84,18 @@ public:
     }
 
     uint64_t push_count() const { return push_count_; }
+
+    /** Drop pending motion commands (RC / gestures mapped to motion). */
+    void clear_motion() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        has_motion_.store(false, std::memory_order_release);
+    }
+
+    void clear_all() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        has_motion_.store(false, std::memory_order_release);
+        has_critical_.store(false, std::memory_order_release);
+    }
 
 private:
     mutable std::mutex mutex_;

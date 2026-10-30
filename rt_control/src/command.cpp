@@ -13,7 +13,7 @@ int clamp_rc(int value, int lo, int hi) {
 }
 
 static CommandType from_u8(uint8_t v) {
-    if (v > static_cast<uint8_t>(CommandType::Disconnect)) {
+    if (v > static_cast<uint8_t>(CommandType::Recover)) {
         return CommandType::None;
     }
     return static_cast<CommandType>(v);

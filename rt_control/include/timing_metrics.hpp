@@ -27,6 +27,7 @@ struct TimingMetrics {
     uint64_t latency_samples{0};
     double p95_exec_ms{0.0};
     double measured_hz{0.0};
+    uint64_t rc_send_failures{0};
     double exec_ring_[kExecRing]{};
     std::size_t exec_ring_i_{0};
     std::size_t exec_ring_n_{0};
@@ -34,6 +35,7 @@ struct TimingMetrics {
     void on_loop(double period_ms, double exec_ms, double jitter_ms, bool missed);
     void on_command_latency(double latency_ms);
     void maybe_print(uint64_t loop_count, double interval_sec);
+    void print_summary() const;
 };
 
 }  // namespace dronn::rt

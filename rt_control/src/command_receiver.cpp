@@ -42,6 +42,16 @@ bool CommandReceiver::send_to_last_client(const uint8_t* data, size_t len) {
     return sent == static_cast<ssize_t>(len);
 }
 
+bool CommandReceiver::send_command_ack(uint8_t flags, uint8_t flight_state, uint32_t sequence) {
+    CommandAckPacket ack{};
+    ack.marker = kAckMarker;
+    ack.version = kProtocolVersion;
+    ack.flags = flags;
+    ack.flight_state = flight_state;
+    ack.sequence = sequence;
+    return send_to_last_client(reinterpret_cast<const uint8_t*>(&ack), sizeof(ack));
+}
+
 bool CommandReceiver::open_socket() {
     const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {

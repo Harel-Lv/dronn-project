@@ -61,6 +61,8 @@ public:
 
     std::string name() const override { return "simulator"; }
 
+    bool is_airborne() const override { return airborne_; }
+
     bool airborne() const { return airborne_; }
 
 private:

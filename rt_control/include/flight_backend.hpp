@@ -21,6 +21,7 @@ public:
     virtual bool land() = 0;
     virtual bool send_rc(const RcValues& rc) = 0;
     virtual void emergency_stop() = 0;
+    virtual bool is_airborne() const { return false; }
     virtual std::string name() const = 0;
 };
 

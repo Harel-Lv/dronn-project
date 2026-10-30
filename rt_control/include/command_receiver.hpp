@@ -29,6 +29,7 @@ public:
 
     /** Reply to the source of the last accepted command (used for Connect ACK). */
     bool send_to_last_client(const uint8_t* data, size_t len);
+    bool send_command_ack(uint8_t flags, uint8_t flight_state, uint32_t sequence);
 
 private:
     bool open_socket();

@@ -187,6 +187,61 @@ static void test_connect_stays_disconnected_until_backend() {
     assert(!fsm.apply_command(connect, reason));
 }
 
+static void test_queue_clear_motion() {
+    CommandQueue q;
+    Command rc{};
+    rc.type = CommandType::Forward;
+    q.push(rc);
+    assert(q.has_command());
+    q.clear_motion();
+    Command land{};
+    land.type = CommandType::Land;
+    q.push(land);
+    Command out{};
+    assert(q.pop_latest(out));
+    assert(out.type == CommandType::Land);
+    assert(!q.pop_latest(out));
+}
+
+static void test_safety_latch_blocks_takeoff_and_motion() {
+    FlightStateMachine fsm;
+    std::string reason;
+    fsm.enter_safe();
+    assert(fsm.safety_latched());
+    Command to{};
+    to.type = CommandType::Takeoff;
+    assert(!fsm.apply_command(to, reason));
+    Command rc{};
+    rc.type = CommandType::Forward;
+    assert(!fsm.apply_command(rc, reason));
+}
+
+static void test_recover_requires_latch() {
+    FlightStateMachine fsm;
+    std::string reason;
+    Command rec{};
+    rec.type = CommandType::Recover;
+    assert(!fsm.apply_command(rec, reason));
+    fsm.enter_safe();
+    assert(fsm.apply_command(rec, reason));
+    fsm.clear_safety_latch();
+    assert(!fsm.safety_latched());
+    assert(fsm.state() == FlightState::Ready);
+}
+
+static void test_land_failed_while_latched_returns_safe() {
+    FlightStateMachine fsm;
+    std::string reason;
+    fsm.enter_safe();
+    Command land{};
+    land.type = CommandType::Land;
+    assert(fsm.apply_command(land, reason));
+    assert(fsm.state() == FlightState::Landing);
+    fsm.on_land_failed();
+    assert(fsm.state() == FlightState::Safe);
+    assert(fsm.safety_latched());
+}
+
 static void test_sleep_until_cadence() {
     using namespace std::chrono;
     constexpr double hz = 100.0;
@@ -220,6 +275,10 @@ int main() {
     test_command_queue_critical_priority();
     test_land_not_overwritten_by_takeoff();
     test_connect_stays_disconnected_until_backend();
+    test_queue_clear_motion();
+    test_safety_latch_blocks_takeoff_and_motion();
+    test_recover_requires_latch();
+    test_land_failed_while_latched_returns_safe();
     test_sleep_until_cadence();
     std::cout << "dronn_rt_tests: OK\n";
     return 0;

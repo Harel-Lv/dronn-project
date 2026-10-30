@@ -90,47 +90,80 @@ RcValues ControlLoop::command_to_rc(const Command& cmd) const {
     }
 }
 
+void ControlLoop::send_command_ack(const Command& cmd, bool ok) {
+    if (receiver_ == nullptr) {
+        return;
+    }
+    receiver_->send_command_ack(
+        ok ? 0 : 1,
+        flight_state_to_u8(fsm_.state()),
+        cmd.sequence);
+}
+
 void ControlLoop::apply_backend_action(const Command& cmd, bool fsm_ok) {
     if (!fsm_ok) {
         return;
     }
     switch (cmd.type) {
-        case CommandType::Connect:
-            if (backend_->connect()) {
+        case CommandType::Connect: {
+            const bool ok = backend_->connect();
+            if (ok) {
                 fsm_.on_backend_connected();
-                if (receiver_ != nullptr) {
-                    const uint8_t ack = kConnectAck;
-                    receiver_->send_to_last_client(&ack, 1);
-                }
+                queue_.clear_motion();
             } else {
                 std::cerr << "[control] backend connect failed\n";
             }
+            send_command_ack(cmd, ok);
             break;
+        }
         case CommandType::Disconnect:
             backend_->send_rc({0, 0, 0, 0});
             backend_->disconnect();
+            queue_.clear_all();
             watchdog_landed_ = false;
+            send_command_ack(cmd, true);
             break;
+        case CommandType::Recover: {
+            const bool grounded = backend_ != nullptr && !backend_->is_airborne();
+            if (grounded) {
+                fsm_.clear_safety_latch();
+                queue_.clear_motion();
+            }
+            send_command_ack(cmd, grounded);
+            if (!grounded) {
+                std::cerr << "[control] recover rejected — backend not grounded\n";
+            }
+            break;
+        }
         case CommandType::Takeoff:
             if (fsm_.state() == FlightState::TakingOff) {
                 backend_->connect();
-                if (backend_->takeoff()) {
+                const bool ok = backend_->takeoff();
+                if (ok) {
                     fsm_.on_takeoff_complete();
+                    queue_.clear_motion();
                 } else {
                     fsm_.on_takeoff_failed();
                     std::cerr << "[control] takeoff failed (backend not ready?)\n";
                 }
+                send_command_ack(cmd, ok);
             }
             break;
         case CommandType::Land:
             if (fsm_.state() == FlightState::Landing) {
-                if (backend_->land()) {
+                const bool ok = backend_->land();
+                if (ok) {
                     fsm_.on_land_complete();
+                    queue_.clear_motion();
                     watchdog_landed_ = false;
                 } else {
                     fsm_.on_land_failed();
                     std::cerr << "[control] land failed (backend not ready?)\n";
                 }
+                send_command_ack(cmd, ok);
+            } else if (fsm_.state() == FlightState::Ready) {
+                queue_.clear_motion();
+                send_command_ack(cmd, true);
             }
             break;
         case CommandType::Hover:
@@ -144,7 +177,10 @@ void ControlLoop::apply_backend_action(const Command& cmd, bool fsm_ok) {
         case CommandType::RotateCcw:
         case CommandType::RcDirect:
             current_rc_ = command_to_rc(cmd);
-            backend_->send_rc(current_rc_);
+            if (!backend_->send_rc(current_rc_)) {
+                metrics_.rc_send_failures++;
+                std::cerr << "[control] send_rc rejected by backend\n";
+            }
             break;
         default:
             break;
@@ -159,6 +195,9 @@ void ControlLoop::tick(uint64_t now_ms) {
         if (!ok) {
             metrics_.fsm_rejected++;
             std::cerr << "[control] reject seq=" << cmd.sequence << " " << reject << "\n";
+            if (is_critical_command(cmd.type)) {
+                send_command_ack(cmd, false);
+            }
         } else {
             using namespace std::chrono;
             const uint64_t now_us = duration_cast<microseconds>(
@@ -193,21 +232,36 @@ void ControlLoop::tick(uint64_t now_ms) {
             watchdog_safe_active_ = true;
             backend_->emergency_stop();
             current_rc_ = {};
+            queue_.clear_motion();
             fsm_.enter_safe();
-            if (!watchdog_landed_) {
-                if (backend_->land()) {
-                    fsm_.on_land_complete();
-                } else {
-                    fsm_.on_land_failed();
-                    std::cerr << "[control] watchdog controlled land failed\n";
-                }
-                watchdog_landed_ = true;
-            }
+            watchdog_land_attempts_ = 0;
+            last_watchdog_land_attempt_ms_ = 0;
             watchdog_.record_safe_activation();
             metrics_.watchdog_safe++;
         }
+        if (!watchdog_landed_ &&
+            watchdog_land_attempts_ < kMaxWatchdogLandAttempts &&
+            (watchdog_land_attempts_ == 0 ||
+             now_ms >= last_watchdog_land_attempt_ms_ + kWatchdogLandRetryMs)) {
+            last_watchdog_land_attempt_ms_ = now_ms;
+            watchdog_land_attempts_++;
+            if (backend_->land()) {
+                fsm_.on_land_complete();
+                queue_.clear_all();
+                watchdog_landed_ = true;
+            } else {
+                fsm_.on_land_failed();
+                std::cerr << "[control] watchdog controlled land failed (attempt "
+                          << static_cast<unsigned>(watchdog_land_attempts_) << "/"
+                          << static_cast<unsigned>(kMaxWatchdogLandAttempts)
+                          << ") — operator must recover\n";
+            }
+        }
     } else {
         watchdog_safe_active_ = false;
+        if (wd != WatchdogAction::Safe) {
+            watchdog_land_attempts_ = 0;
+        }
     }
 
     if (receiver_) {
@@ -250,6 +304,7 @@ void ControlLoop::run_until_signal() {
     }
 
     stop();
+    metrics_.print_summary();
 }
 
 }  // namespace dronn::rt

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace dronn::rt {
@@ -24,6 +25,7 @@ enum class CommandType : uint8_t {
     RcDirect = 12,
     Connect = 13,
     Disconnect = 14,
+    Recover = 15,
 };
 
 #pragma pack(push, 1)
@@ -42,6 +44,21 @@ struct CommandPacket {
 
 static_assert(sizeof(CommandPacket) == kPacketSize, "CommandPacket size mismatch");
 
+constexpr uint8_t kAckMarker = 0xAC;
+constexpr std::size_t kAckPacketSize = 8;
+
+#pragma pack(push, 1)
+struct CommandAckPacket {
+    uint8_t marker{kAckMarker};
+    uint8_t version{kProtocolVersion};
+    uint8_t flags{0};  // 0 = success, 1 = failure
+    uint8_t flight_state{0};
+    uint32_t sequence{0};
+};
+#pragma pack(pop)
+
+static_assert(sizeof(CommandAckPacket) == kAckPacketSize, "CommandAckPacket size mismatch");
+
 struct Command {
     CommandType type{CommandType::None};
     uint32_t sequence{0};
@@ -57,7 +74,6 @@ int clamp_rc(int value, int lo = -100, int hi = 100);
 
 bool decode_packet(const CommandPacket& packet, Command& out);
 
-// Wall-clock age check (timestamp_us from Python time.time()).
 bool is_packet_stale(uint64_t timestamp_us, uint64_t now_us, uint32_t max_age_ms);
 
 bool is_packet_future(uint64_t timestamp_us, uint64_t now_us, uint32_t max_future_ms);

@@ -38,6 +38,7 @@ private:
     void tick(uint64_t now_ms);
     RcValues command_to_rc(const Command& cmd) const;
     void apply_backend_action(const Command& cmd, bool fsm_ok);
+    void send_command_ack(const Command& cmd, bool ok);
     uint64_t now_ms() const;
 
     ControlLoopConfig cfg_;
@@ -52,6 +53,10 @@ private:
     bool watchdog_landed_{false};
     bool watchdog_hover_active_{false};
     bool watchdog_safe_active_{false};
+    uint8_t watchdog_land_attempts_{0};
+    uint64_t last_watchdog_land_attempt_ms_{0};
+    static constexpr uint32_t kWatchdogLandRetryMs{500};
+    static constexpr uint8_t kMaxWatchdogLandAttempts{5};
 };
 
 }  // namespace dronn::rt
