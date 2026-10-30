@@ -426,7 +426,13 @@ def main() -> None:
     client._send("hover", lr=0, fb=0, ud=0, yaw=0)
     if client._sequence != 1:
         _fail("rt sequence")
-    _ok("RtCppClient packet encode")
+    import struct
+
+    ack = struct.pack("<BBBB I", 0xAC, 1, 0, 2, 7)
+    parsed = client._parse_ack(ack)
+    if parsed is None or parsed[4] != 7:
+        _fail("rt ack parse")
+    _ok("RtCppClient packet encode + ACK parse")
 
     _drone_logic_checks()
     _control_checks()

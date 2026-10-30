@@ -152,3 +152,4 @@ Real Tello today: keep `drone.backend: tello`. C++ Tello UDP backend is optional
 - **`rt_control`:** C++ service uses a **simulator** backend; build/run on Linux/WSL. Not the same UDP protocol as `djitellopy`.
 - **Not hard real-time:** Python + normal OS scheduling; no certified safety product.
 - **Safety details:** [`docs/SAFETY.md`](docs/SAFETY.md)
+- **CI / rt_control validation:** [`.github/workflows/ci.yml`](.github/workflows/ci.yml), [`docs/RT_VALIDATION.md`](docs/RT_VALIDATION.md)

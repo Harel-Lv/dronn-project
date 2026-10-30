@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main, '**']
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - name: Build rt_control
+        run: bash scripts/build_rt_control.sh
+
+      - name: CTest
+        working-directory: rt_control/build
+        run: ctest --output-on-failure
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Python syntax
+        run: python -m compileall -q app scripts
+
+      - name: Smoke tests
+        run: python scripts/smoke_test.py

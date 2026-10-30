@@ -28,10 +28,12 @@ Computer vision (gestures, tracking, chase) runs in Python. Safety logic differs
 Real-time-**oriented** periodic loop (default 20 Hz) on Linux/WSL — **not** hard real-time.
 
 - **Flight state machine:** motion only in `FLYING` / `HOVERING`; takeoff only from `READY` after backend connect; `READY` only after successful `backend->connect()`.
-- **Command queue:** critical commands use a separate slot; pending **Land** / **Disconnect** are not replaced by **Takeoff** / **Connect**.
+- **Command queue:** critical commands use a separate slot; pending **Land** / **Disconnect** are not replaced by **Takeoff** / **Connect**. Motion slot cleared after successful land/disconnect/connect and on SAFE entry.
+- **Command ACK (v1):** 8-byte UDP reply (`0xAC`, version, flags, flight_state, sequence). Python `RtCppClient` waits for matching sequence on **Connect**, **Takeoff**, **Land**, **Disconnect**, and **Recover**; timeout or NACK does **not** update `_airborne`.
+- **Safety latch:** watchdog SAFE sets `safety_latched_`; **Takeoff** and motion rejected until **Recover** with backend grounded (`is_airborne() == false`).
 - **Watchdog:**
   - **Hover** — no valid command for `watchdog_hover_ms` → zero RC (simulated hover).
-  - **Safe** — no command for `watchdog_safe_ms` → `emergency_stop()` then **controlled** `land()` if backend reports success; FSM reflects land failure if not.
+  - **Safe** — no command for `watchdog_safe_ms` → `emergency_stop()` then up to **5** bounded `land()` attempts (500 ms apart). `watchdog_landed_` is set **only** after a successful land; failures stay in SAFE for operator **Recover**.
 - **UDP ingress:** version/size checks, RC clamp, stale/future timestamps (see `rt_control/README.md`).
 
 Simulator success does **not** prove Tello behavior.
