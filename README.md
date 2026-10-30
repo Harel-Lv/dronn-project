@@ -144,3 +144,11 @@ Real Tello today: keep `drone.backend: tello`. C++ Tello UDP backend is optional
 | 6 | `chase` | כל פנים = אדום; החזק **Space** = האצה |
 
 ניתן להחליף מצב תוך כדי סשן עם מקשים 1–6.
+
+## Known limitations
+
+- **Wi‑Fi:** Tello control and FPV need a stable link to `192.168.10.1`; VPN/Ethernet can break routing.
+- **CV:** gestures and tracking can mis-detect; use simulation and ground tests first.
+- **`rt_control`:** C++ service uses a **simulator** backend; build/run on Linux/WSL. Not the same UDP protocol as `djitellopy`.
+- **Not hard real-time:** Python + normal OS scheduling; no certified safety product.
+- **Safety details:** [`docs/SAFETY.md`](docs/SAFETY.md)

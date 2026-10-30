@@ -41,9 +41,13 @@ python ../scripts/rt_cpp_ipc_demo.py
 
 - **Thread A:** UDP receiver (blocking I/O, parsing, validation).
 - **Thread B:** periodic control loop (`sleep_until`, default 20 Hz).
-- **Buffer:** latest-command slot (bounded memory; old commands dropped intentionally).
+- **Buffer:** motion uses a latest-command slot; **critical** commands (`CONNECT`, `DISCONNECT`, `TAKEOFF`, `LAND`) use a separate slot so rapid RC cannot overwrite an pending land.
 
 The control loop never waits on the network. Parsing and stale/sequence checks run in the receiver thread.
+
+**Watchdog:** `Hover` sends zero RC after `watchdog_hover_ms` without a valid packet. `Safe` calls `emergency_stop()` then attempts `land()`; FSM updates only if the backend reports success. See [`../docs/SAFETY.md`](../docs/SAFETY.md).
+
+**FSM:** `READY` is entered only after `backend->connect()` succeeds. Takeoff is allowed only from `READY` (grounded).
 
 ## Command packet (v1, 24 bytes, little-endian)
 

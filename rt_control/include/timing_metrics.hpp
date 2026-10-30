@@ -5,6 +5,8 @@
 namespace dronn::rt {
 
 struct TimingMetrics {
+    static constexpr std::size_t kExecRing = 64;
+
     uint64_t loop_count{0};
     uint64_t deadline_misses{0};
     uint64_t commands_received{0};

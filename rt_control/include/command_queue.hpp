@@ -7,39 +7,70 @@
 
 namespace dronn::rt {
 
-// Latest-command slot: receiver writes, control loop reads (no unbounded queue).
+inline bool is_critical_command(CommandType type) {
+    switch (type) {
+        case CommandType::Takeoff:
+        case CommandType::Land:
+        case CommandType::Connect:
+        case CommandType::Disconnect:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Latest motion slot + one critical slot (LAND/TAKEOFF/CONNECT/DISCONNECT).
+// Continuous RC updates overwrite only the motion slot so safety commands are not dropped.
 class CommandQueue {
 public:
     void push(const Command& cmd) {
         std::lock_guard<std::mutex> lock(mutex_);
-        latest_ = cmd;
-        has_new_.store(true, std::memory_order_release);
         push_count_++;
+        if (is_critical_command(cmd.type)) {
+            critical_ = cmd;
+            has_critical_.store(true, std::memory_order_release);
+            return;
+        }
+        latest_ = cmd;
+        has_motion_.store(true, std::memory_order_release);
     }
 
     bool pop_latest(Command& out) {
-        if (!has_new_.load(std::memory_order_acquire)) {
+        if (has_critical_.load(std::memory_order_acquire)) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (has_critical_.load(std::memory_order_relaxed)) {
+                out = critical_;
+                has_critical_.store(false, std::memory_order_release);
+                return true;
+            }
+        }
+        if (!has_motion_.load(std::memory_order_acquire)) {
             return false;
         }
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!has_new_.load(std::memory_order_relaxed)) {
+        if (!has_motion_.load(std::memory_order_relaxed)) {
             return false;
         }
         out = latest_;
-        has_new_.store(false, std::memory_order_release);
+        has_motion_.store(false, std::memory_order_release);
         return true;
     }
 
     const Command& peek_latest() const { return latest_; }
 
-    bool has_command() const { return has_new_.load(std::memory_order_acquire); }
+    bool has_command() const {
+        return has_critical_.load(std::memory_order_acquire) ||
+               has_motion_.load(std::memory_order_acquire);
+    }
 
     uint64_t push_count() const { return push_count_; }
 
 private:
     mutable std::mutex mutex_;
     Command latest_{};
-    std::atomic<bool> has_new_{false};
+    Command critical_{};
+    std::atomic<bool> has_motion_{false};
+    std::atomic<bool> has_critical_{false};
     std::atomic<uint64_t> push_count_{0};
 };
 

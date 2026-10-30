@@ -68,7 +68,12 @@ bool FlightStateMachine::transition(FlightState next) {
 }
 
 bool FlightStateMachine::handle_takeoff(std::string& reason) {
-    if (state_ == FlightState::Ready || state_ == FlightState::Hovering) {
+    if (state_ == FlightState::TakingOff || state_ == FlightState::Flying ||
+        state_ == FlightState::Hovering || state_ == FlightState::Landing) {
+        reason = "already airborne or takeoff in progress";
+        return false;
+    }
+    if (state_ == FlightState::Ready) {
         transition(FlightState::TakingOff);
         return true;
     }
@@ -114,10 +119,16 @@ bool FlightStateMachine::handle_motion_command(CommandType type, std::string& re
 bool FlightStateMachine::apply_command(const Command& cmd, std::string& reject_reason) {
     switch (cmd.type) {
         case CommandType::Connect:
-            on_backend_connected();
+            if (state_ != FlightState::Disconnected) {
+                reject_reason = "already connected";
+                return false;
+            }
             return true;
         case CommandType::Disconnect:
-            on_backend_disconnected();
+            if (state_ == FlightState::Disconnected) {
+                return true;
+            }
+            transition(FlightState::Disconnected);
             return true;
         case CommandType::Takeoff:
             return handle_takeoff(reject_reason);

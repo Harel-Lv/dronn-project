@@ -21,8 +21,8 @@ public:
     bool start();
     void stop();
 
-    uint64_t packets_received() const { return packets_received_; }
-    uint64_t packets_rejected() const { return packets_rejected_; }
+    uint64_t packets_received() const { return packets_received_.load(); }
+    uint64_t packets_rejected() const { return packets_rejected_.load(); }
 
 private:
     bool open_socket();
@@ -35,8 +35,8 @@ private:
     int socket_fd_{-1};
     std::thread thread_;
     std::atomic<bool> running_{false};
-    std::atomic<uint64_t packets_received_{0};
-    std::atomic<uint64_t packets_rejected_{0};
+    std::atomic<uint64_t> packets_received_{0};
+    std::atomic<uint64_t> packets_rejected_{0};
     uint32_t last_sequence_{0};
     bool have_sequence_{false};
 };

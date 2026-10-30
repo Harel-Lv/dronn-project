@@ -1,12 +1,34 @@
 #include "timing_metrics.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <vector>
 
 namespace dronn::rt {
 
+namespace {
+double percentile(std::vector<double>& v, double p) {
+    if (v.empty()) {
+        return 0.0;
+    }
+    const std::size_t idx =
+        static_cast<std::size_t>(std::ceil(p * static_cast<double>(v.size()))) - 1;
+    std::nth_element(v.begin(), v.begin() + idx, v.end());
+    return v[idx];
+}
+}  // namespace
+
 void TimingMetrics::on_loop(double period_ms, double exec_ms, double jitter_ms, bool missed) {
     loop_count++;
+    if (period_ms > 0.01) {
+        measured_hz = 1000.0 / period_ms;
+    }
+    exec_ring_[exec_ring_i_] = exec_ms;
+    exec_ring_i_ = (exec_ring_i_ + 1) % kExecRing;
+    if (exec_ring_n_ < kExecRing) {
+        exec_ring_n_++;
+    }
     if (missed) {
         deadline_misses++;
     }

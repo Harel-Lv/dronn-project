@@ -96,7 +96,11 @@ void ControlLoop::apply_backend_action(const Command& cmd, bool fsm_ok) {
     }
     switch (cmd.type) {
         case CommandType::Connect:
-            backend_->connect();
+            if (backend_->connect()) {
+                fsm_.on_backend_connected();
+            } else {
+                std::cerr << "[control] backend connect failed\n";
+            }
             break;
         case CommandType::Disconnect:
             backend_->send_rc({0, 0, 0, 0});

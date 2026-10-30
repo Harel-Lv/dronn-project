@@ -284,6 +284,30 @@ def _gesture_checks() -> None:
     _ok(f"{len(cases)} hand signs classified + mapped")
 
 
+def _safety_doc_check() -> None:
+    print("smoke: safety documentation")
+    path = _ROOT / "docs" / "SAFETY.md"
+    if not path.is_file():
+        _fail("docs/SAFETY.md missing")
+    text = path.read_text(encoding="utf-8")
+    for needle in ("hobby", "rt_control", "Keepalive", "Watchdog"):
+        if needle not in text:
+            _fail(f"SAFETY.md should mention {needle}")
+    _ok("SAFETY.md present")
+
+
+def _manual_input_check() -> None:
+    from app.input.pc_controller import PcInputController
+
+    print("smoke: manual keyboard focus gate")
+    inp = PcInputController(focus_window="Drone Session")
+    # Without the session window focused, movement must be zero.
+    lr, fb, ud, yaw = inp.compute_manual_rc()
+    if (lr, fb, ud, yaw) != (0, 0, 0, 0):
+        _fail("manual RC must be zero when session window is not focused")
+    _ok("focus gate returns zero RC")
+
+
 def _session_back_check() -> None:
     import app.session as s
     from app.session import SessionOptions
@@ -407,6 +431,8 @@ def main() -> None:
     _drone_logic_checks()
     _control_checks()
     _gesture_checks()
+    _safety_doc_check()
+    _manual_input_check()
     _session_back_check()
 
     print("\nAll smoke checks passed.")
