@@ -19,16 +19,34 @@ inline bool is_critical_command(CommandType type) {
     }
 }
 
+inline int critical_command_priority(CommandType type) {
+    switch (type) {
+        case CommandType::Land:
+        case CommandType::Disconnect:
+            return 2;
+        case CommandType::Takeoff:
+        case CommandType::Connect:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 // Latest motion slot + one critical slot (LAND/TAKEOFF/CONNECT/DISCONNECT).
 // Continuous RC updates overwrite only the motion slot so safety commands are not dropped.
+// Land and Disconnect beat Takeoff/Connect in the critical slot.
 class CommandQueue {
 public:
     void push(const Command& cmd) {
         std::lock_guard<std::mutex> lock(mutex_);
         push_count_++;
         if (is_critical_command(cmd.type)) {
-            critical_ = cmd;
-            has_critical_.store(true, std::memory_order_release);
+            if (!has_critical_.load(std::memory_order_relaxed) ||
+                critical_command_priority(cmd.type) >=
+                    critical_command_priority(critical_.type)) {
+                critical_ = cmd;
+                has_critical_.store(true, std::memory_order_release);
+            }
             return;
         }
         latest_ = cmd;

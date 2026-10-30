@@ -28,7 +28,7 @@ Computer vision (gestures, tracking, chase) runs in Python. Safety logic differs
 Real-time-**oriented** periodic loop (default 20 Hz) on Linux/WSL — **not** hard real-time.
 
 - **Flight state machine:** motion only in `FLYING` / `HOVERING`; takeoff only from `READY` after backend connect; `READY` only after successful `backend->connect()`.
-- **Command queue:** critical commands (`CONNECT`, `DISCONNECT`, `TAKEOFF`, `LAND`) kept in a separate slot so high-rate RC cannot overwrite them.
+- **Command queue:** critical commands use a separate slot; pending **Land** / **Disconnect** are not replaced by **Takeoff** / **Connect**.
 - **Watchdog:**
   - **Hover** — no valid command for `watchdog_hover_ms` → zero RC (simulated hover).
   - **Safe** — no command for `watchdog_safe_ms` → `emergency_stop()` then **controlled** `land()` if backend reports success; FSM reflects land failure if not.

@@ -24,6 +24,24 @@ CommandReceiver::CommandReceiver(
 
 CommandReceiver::~CommandReceiver() { stop(); }
 
+bool CommandReceiver::send_to_last_client(const uint8_t* data, size_t len) {
+    if (data == nullptr || len == 0 || socket_fd_ < 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(client_mutex_);
+    if (!has_last_client_) {
+        return false;
+    }
+    const ssize_t sent = ::sendto(
+        socket_fd_,
+        data,
+        len,
+        0,
+        reinterpret_cast<const sockaddr*>(&last_client_),
+        last_client_len_);
+    return sent == static_cast<ssize_t>(len);
+}
+
 bool CommandReceiver::open_socket() {
     const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
@@ -138,15 +156,11 @@ void CommandReceiver::recv_loop() {
         have_sequence_ = true;
         last_sequence_ = packet.sequence;
 
-        if (cmd.type == CommandType::Connect) {
-            const uint8_t ack = kConnectAck;
-            ::sendto(
-                fd,
-                &ack,
-                1,
-                0,
-                reinterpret_cast<sockaddr*>(&from),
-                from_len);
+        {
+            std::lock_guard<std::mutex> lock(client_mutex_);
+            last_client_ = from;
+            last_client_len_ = from_len;
+            has_last_client_ = true;
         }
 
         queue_.push(cmd);

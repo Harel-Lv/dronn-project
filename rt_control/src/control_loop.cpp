@@ -98,6 +98,10 @@ void ControlLoop::apply_backend_action(const Command& cmd, bool fsm_ok) {
         case CommandType::Connect:
             if (backend_->connect()) {
                 fsm_.on_backend_connected();
+                if (receiver_ != nullptr) {
+                    const uint8_t ack = kConnectAck;
+                    receiver_->send_to_last_client(&ack, 1);
+                }
             } else {
                 std::cerr << "[control] backend connect failed\n";
             }
@@ -191,8 +195,12 @@ void ControlLoop::tick(uint64_t now_ms) {
             current_rc_ = {};
             fsm_.enter_safe();
             if (!watchdog_landed_) {
-                backend_->land();
-                fsm_.on_land_complete();
+                if (backend_->land()) {
+                    fsm_.on_land_complete();
+                } else {
+                    fsm_.on_land_failed();
+                    std::cerr << "[control] watchdog controlled land failed\n";
+                }
                 watchdog_landed_ = true;
             }
             watchdog_.record_safe_activation();

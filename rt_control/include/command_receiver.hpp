@@ -2,8 +2,11 @@
 
 #include "command_queue.hpp"
 
+#include <netinet/in.h>
+
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -24,6 +27,9 @@ public:
     uint64_t packets_received() const { return packets_received_.load(); }
     uint64_t packets_rejected() const { return packets_rejected_.load(); }
 
+    /** Reply to the source of the last accepted command (used for Connect ACK). */
+    bool send_to_last_client(const uint8_t* data, size_t len);
+
 private:
     bool open_socket();
     void recv_loop();
@@ -39,6 +45,10 @@ private:
     std::atomic<uint64_t> packets_rejected_{0};
     uint32_t last_sequence_{0};
     bool have_sequence_{false};
+    std::mutex client_mutex_;
+    sockaddr_in last_client_{};
+    socklen_t last_client_len_{0};
+    bool has_last_client_{false};
 };
 
 }  // namespace dronn::rt

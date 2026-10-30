@@ -49,6 +49,8 @@ The control loop never waits on the network. Parsing and stale/sequence checks r
 
 **FSM:** `READY` is entered only after `backend->connect()` succeeds. Takeoff is allowed only from `READY` (grounded).
 
+**Connect ACK:** byte `0xAC` is sent to the client only after the simulator backend connects successfully (not on UDP receive alone).
+
 ## Command packet (v1, 24 bytes, little-endian)
 
 | Field | Type | Notes |

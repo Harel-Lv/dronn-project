@@ -41,13 +41,20 @@ static void test_decode_bad_version() {
     assert(!decode_packet(p, c));
 }
 
-static void test_fsm_takeoff_land() {
-    FlightStateMachine fsm;
+static void connect_to_ready(FlightStateMachine& fsm) {
     std::string reason;
     Command connect{};
     connect.type = CommandType::Connect;
     assert(fsm.apply_command(connect, reason));
+    assert(fsm.state() == FlightState::Disconnected);
+    fsm.on_backend_connected();
     assert(fsm.state() == FlightState::Ready);
+}
+
+static void test_fsm_takeoff_land() {
+    FlightStateMachine fsm;
+    std::string reason;
+    connect_to_ready(fsm);
 
     Command to{};
     to.type = CommandType::Takeoff;
@@ -75,9 +82,7 @@ static void test_watchdog() {
 static void test_fsm_rejects_motion_while_ready() {
     FlightStateMachine fsm;
     std::string reason;
-    Command connect{};
-    connect.type = CommandType::Connect;
-    assert(fsm.apply_command(connect, reason));
+    connect_to_ready(fsm);
     Command rc{};
     rc.type = CommandType::RcDirect;
     assert(!fsm.apply_command(rc, reason));
@@ -118,9 +123,7 @@ static void test_land_from_safe() {
 static void test_takeoff_failed_reverts_fsm() {
     FlightStateMachine fsm;
     std::string reason;
-    Command connect{};
-    connect.type = CommandType::Connect;
-    assert(fsm.apply_command(connect, reason));
+    connect_to_ready(fsm);
     Command to{};
     to.type = CommandType::Takeoff;
     assert(fsm.apply_command(to, reason));
@@ -129,14 +132,10 @@ static void test_takeoff_failed_reverts_fsm() {
     assert(fsm.state() == FlightState::Ready);
 }
 
-static void test_sleep_until_cadence() {
-    using namespace std::chrono;
-    constexpr double hz = 100.0;
-    const auto period = duration_cast<steady_clock::duration>(duration<double>(1.0 / hz));
 static void test_takeoff_rejected_while_hovering() {
     FlightStateMachine fsm;
     std::string reason;
-    fsm.on_backend_connected();
+    connect_to_ready(fsm);
     Command to{};
     to.type = CommandType::Takeoff;
     assert(fsm.apply_command(to, reason));
@@ -161,6 +160,19 @@ static void test_command_queue_critical_priority() {
     assert(q.pop_latest(out));
     assert(out.type == CommandType::RcDirect);
     assert(out.lr == 50);
+}
+
+static void test_land_not_overwritten_by_takeoff() {
+    CommandQueue q;
+    Command land{};
+    land.type = CommandType::Land;
+    Command takeoff{};
+    takeoff.type = CommandType::Takeoff;
+    q.push(land);
+    q.push(takeoff);
+    Command out{};
+    assert(q.pop_latest(out));
+    assert(out.type == CommandType::Land);
 }
 
 static void test_connect_stays_disconnected_until_backend() {
@@ -206,4 +218,9 @@ int main() {
     test_takeoff_failed_reverts_fsm();
     test_takeoff_rejected_while_hovering();
     test_command_queue_critical_priority();
+    test_land_not_overwritten_by_takeoff();
     test_connect_stays_disconnected_until_backend();
+    test_sleep_until_cadence();
+    std::cout << "dronn_rt_tests: OK\n";
+    return 0;
+}

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace dronn::rt {
@@ -24,6 +25,11 @@ struct TimingMetrics {
     double avg_command_latency_ms{0.0};
     double max_command_latency_ms{0.0};
     uint64_t latency_samples{0};
+    double p95_exec_ms{0.0};
+    double measured_hz{0.0};
+    double exec_ring_[kExecRing]{};
+    std::size_t exec_ring_i_{0};
+    std::size_t exec_ring_n_{0};
 
     void on_loop(double period_ms, double exec_ms, double jitter_ms, bool missed);
     void on_command_latency(double latency_ms);
